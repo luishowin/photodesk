@@ -1,6 +1,6 @@
 # PhotoDesk — Architecture Specification
 
-**Version:** 0.7
+**Version:** 0.8
 **Author:** Luis Howin
 **Platform:** Fedora Workstation / GNOME
 **Status:** Master spec for the coding agent. **Phase 0 complete.**
@@ -46,7 +46,7 @@ This table is the contract. Anything not listed is undecided and needs a decisio
 | **v1 discards iPhone HDR gain maps** | PROVISIONAL | → an HDR display, or the first wanted gain-mapped export (§4) |
 | **ICC extraction from real containers** | PROVISIONAL | → the two blocked §2.2 corpus items, once `libheif-devel` is installed. Synthetic patches prove the matrices; they cannot prove we read the tag that selects them. |
 | **Export gamut-mapping policy** | PROVISIONAL | → before v0.1 exports (§4). §4 never named one; the Spike B harness uses clip-in-linear, which is a choice currently made in a test rather than in the spec. |
-| **Front-end framework** | PROVISIONAL | → the author, before v0.1 scaffolding. Spike C measured the constraint away rather than resolving the choice: the canvas is a WebGL2 context, a UBO and three draw calls, identical under any framework or none (`SPIKE-C.md`). What remains is §10/§11 UI ergonomics, which is not a thing a spike decides. |
+| **No front-end framework: TypeScript + Vite, zero runtime dependencies** | **FROZEN** | The canvas needs none (Spike C), and §10/§11 specify the interaction surface closely enough that a component library would be overridden rather than used. Cost accepted knowingly: panels, undo and the keymap are hand-written, and the bill arrives at v0.2–v0.7, not v0.1. |
 
 ---
 
@@ -562,6 +562,12 @@ The second constraint is the technical one: hue next to a photograph shifts how 
 
 Four to six controls per tab; `Advanced` reveals the rest. GNOME conventions where free: header bar, `prefers-color-scheme`, `Esc` to dismiss. Dark is the default and the one designed properly.
 
+**No framework.** TypeScript and Vite, zero runtime dependencies. Two reasons and one accepted cost.
+
+The canvas does not need one — Spike C's harness runs the full stack at 2 MP as plain ES modules with no build step, because a WebGL2 context, a uniform buffer and three draw calls touch no framework API. And §11 specifies the interaction surface down to `Shift`-drag being 0.1× travel, double-click-to-reset, scroll-only-when-hovered and one-gesture-one-undo-entry; a component library's slider does none of that, so it would be overridden rather than used, and overriding a control is more work than writing one.
+
+**The cost, stated so it is not a surprise:** panels, undo, focus management and the keymap are all hand-written, and none of that bill falls due at v0.1 — it arrives across v0.2 to v0.7. The reason to accept it is that this is an application of exactly one screen with roughly forty controls on it, for an audience of one, that wants to still build in a decade.
+
 ---
 
 ## 11. Interaction principles
@@ -668,7 +674,7 @@ Byte-identical. Not "metadata unchanged" — identical. Runs in CI on every comm
 
 ```
 photodesk/
-├── src/                        ← front end
+├── src/                        ← front end (TypeScript + Vite, no framework)
 │   ├── document/               ← model, validation, migration, history, presets
 │   ├── graph/                  ← DAG compile, dirty tracking (no UI)
 │   ├── panels/                 ← Crop Light Color Detail Effects Masks AI
@@ -738,7 +744,7 @@ photodesk/
 | 5 | Pre-1.0 vs post-1.0 reorder policy | Before v0.2 (§5) |
 | 6 | Remote AI endpoint: self-hosted ComfyUI or gateway | Before v0.5 |
 | 7 | Icon — `PD` monogram or geometric mark, monochrome, no aperture | Whenever; the 16×16 render is the only test |
-| 8 | Front-end framework | The author, before v0.1 scaffolding — Spike C measured the constraint away rather than choosing |
+| ~~8~~ | ~~Front-end framework~~ | **Closed 2026-09-06 — none. TypeScript + Vite, zero runtime dependencies (§10.3)** |
 | 9 | HDR gain map handling beyond v1's discard | An HDR display, or the first wanted gain-mapped export (§4) |
 | 10 | Layer count at which frame rate is allowed to fall | Measured against the §7.3 bound of 6 |
 

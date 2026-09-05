@@ -16,7 +16,7 @@ There is no application yet, and that is on purpose. The architecture spec commi
 
 | Phase | State |
 |---|---|
-| Spec | v0.7 — [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Spec | v0.8 — [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Spike A — RapidRAW fork audit | **complete — gate failed, no fork.** [`docs/FORK-AUDIT.md`](docs/FORK-AUDIT.md) |
 | Spike B — colour validation harness | **complete — green, working space frozen.** [`docs/SPIKE-B.md`](docs/SPIKE-B.md) |
 | Spike C — preview renderer | **complete — green, preview path frozen.** [`docs/SPIKE-C.md`](docs/SPIKE-C.md) |
@@ -53,13 +53,14 @@ Two rules follow, and the project is held to both. **Every frozen item carries a
 
 | Item | Resolved by |
 |---|---|
-| Front-end framework | The author, before v0.1 — Spike C measured the constraint away rather than choosing |
 | Export gamut-mapping policy | Before v0.1 exports — §4 never named one |
 | ICC extraction from real containers | The two blocked corpus items, now that `libheif-devel` is installed |
 | v1 pipeline stage ordering | Golden-image validation |
 | v1 discards iPhone HDR gain maps | An HDR display, or the first wanted gain-mapped export |
 
 Five items left the table on 2026-09-05 and are now frozen: **do not fork RapidRAW**, **build against `rawler` + `libheif` + our own shaders**, **the working space is linear Display P3 at f16**, **the preview runs WebGL2 from transpiled WGSL**, and **shaders are authored fragment-first** — the last of these because naga refuses compute, storage buffers and storage textures by name, so one of them anywhere breaks the preview path everywhere.
+
+A sixth followed on 2026-09-06: **no front-end framework** — TypeScript and Vite, zero runtime dependencies. Spike C showed the canvas needs none, and §11 specifies sliders closely enough (`Shift`-drag at 0.1× travel, one gesture per undo entry, scroll only when the control is hovered) that a component library would be overridden rather than used. Panels, undo and the keymap are hand-written, and that bill arrives at v0.2–v0.7 rather than v0.1.
 
 ## Phase 0
 
@@ -73,10 +74,11 @@ Five items left the table on 2026-09-05 and are now frozen: **do not fork RapidR
 
 **Phase 0 is done and v0.1 is unblocked.** Four things stand between here and starting it, none of them a spike:
 
-1. **Pick the front-end framework.** Spike C established the renderer imposes no constraint — the canvas is a WebGL2 context, a UBO and three draw calls, identical under any framework or none. What remains is §10/§11 UI ergonomics, which is the author's call.
-2. **Name the export gamut-mapping policy.** §4 says "linear P3 → tone encode → sRGB" and stops. The Spike B harness clips per channel in linear light, which is defensible and currently decided in a test file rather than in the spec.
-3. **Finish the §2.2 corpus.** `libheif-devel` is now installed, which unblocks the iPhone HEIF and gain-map items and with them ICC extraction from a real container.
-4. **Confirm webkit2gtk-4.1.** Spike C ran in webkitgtk-6.0 via Epiphany. Tauri v2 binds webkit2gtk-4.1 — same WebKit 2.52.5, shared WebGL implementation, unconfirmed. It belongs to the first v0.1 build.
+1. **Name the export gamut-mapping policy.** §4 says "linear P3 → tone encode → sRGB" and stops. The Spike B harness clips per channel in linear light, which is defensible and currently decided in a test file rather than in the spec.
+2. **Finish the §2.2 corpus.** `libheif-devel` is now installed, which unblocks the iPhone HEIF and gain-map items and with them ICC extraction from a real container — the only tests that would catch reading the *wrong* profile rather than applying the right one incorrectly.
+3. **Confirm webkit2gtk-4.1.** Spike C ran in webkitgtk-6.0 via Epiphany. Tauri v2 binds webkit2gtk-4.1 — same WebKit 2.52.5, shared WebGL implementation, unconfirmed. It belongs to the first v0.1 build.
+
+The front end is settled: **no framework**, TypeScript and Vite (§10.3).
 
 **Local environment, as of 2026-09-05.** Present: Rust 1.98, Node 22.23 / npm 10.9, `lcms2-devel` 2.16, `libheif-devel` 1.21.2, WebKitGTK 2.52.5 (both 4.1 and 6.0), Mesa 26.1.8, `gh` 2.97. Still absent and needed for Tauri itself: `webkit2gtk4.1-devel`, `gtk3-devel`, `librsvg2-devel`, `openssl-devel`. The GPU is an AMD Cezanne Vega iGPU — wgpu reaches it through Vulkan as `RADV RENOIR`, which makes Vulkan compute rather than ROCm the realistic path for §9.1's `LocalGpu`.
 

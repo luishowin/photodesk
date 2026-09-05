@@ -200,3 +200,29 @@ Two of the three answers were not the expected ones. A was expected to pass and 
 ### Still open before v0.1
 
 Four items, none of them a spike: the front-end framework; the export gamut-mapping policy §4 never named; ICC extraction from real containers, now unblocked since `libheif-devel` is installed; and confirmation that webkit2gtk-4.1 — Tauri's binding, as opposed to the webkitgtk-6.0 this probe ran in — behaves identically. Same engine, same WebKit 2.52.5, shared WebGL implementation, but unconfirmed.
+
+---
+
+## 2026-09-06 — front end decided; spec v0.7 → v0.8
+
+**`Front-end framework` → FROZEN: none. TypeScript and Vite, zero runtime dependencies.**
+
+The last item Phase 0 left open, and the only one it could not answer itself.
+
+Spike C was given this because it is the first thing that puts pixels in a webview. What it returned was not a choice but the absence of a constraint: the canvas path is a WebGL2 context, a uniform buffer, three draw calls and a `requestAnimationFrame` loop, touching no framework API and identical under React, Svelte, Solid or nothing. `tests/renderer/web/preview.html` runs the whole stack at 2 MP as plain ES modules with no build step at all.
+
+So the decision came down to §10 and §11 rather than to rendering, and there it goes the same way. §11 specifies sliders down to `Shift`-drag being 0.1× travel, `Ctrl`-drag 10×, double-click-to-reset, click-the-value for numeric entry, scroll only when the control is hovered and never when the panel is, and one completed gesture being exactly one undo entry. No component library's slider does that. It would be overridden rather than used, and overriding a control is more work than writing one.
+
+**The cost is real and is accepted knowingly**, which is what §0 requires of a frozen item. Panels, undo, focus management and the keymap are all hand-written. None of that bill falls due at v0.1 — which is a HEIF, six sliders and an export — and all of it arrives across v0.2 to v0.7. The reason to take it anyway: this is an application of one screen with roughly forty controls, for an audience of one, that wants to still build in a decade. Framework churn is the larger of the two risks over that horizon.
+
+Recorded in §10.3 alongside the type and colour tokens, because it is a UI decision and belongs where the rest of the UI decisions are, not in a build-tooling note.
+
+**Phase 0 is now fully closed.** Every question §2 raised has an answer, and every item it opened has either been frozen or has a named exit.
+
+### What remains before v0.1
+
+Three items, all in the §0 register, none of them a spike:
+
+- **`Export gamut-mapping policy`** — §4 says "linear P3 → tone encode → sRGB" and stops. The Spike B harness clips per channel in linear light and agrees with lcms2 at relative colorimetric to mean ΔE 0.08. Defensible, and currently decided in a test file rather than in the specification. Due before v0.1 exports anything.
+- **`ICC extraction from real containers`** — `libheif-devel` is installed now, so the two blocked §2.2 corpus items are buildable. They are the only tests that would catch reading the *wrong* profile rather than applying the right one incorrectly.
+- **webkit2gtk-4.1 confirmation** — Spike C measured in webkitgtk-6.0 via Epiphany; Tauri v2 binds 4.1. Same WebKit 2.52.5, shared WebGL implementation, unconfirmed. Belongs to the first v0.1 build rather than to a spike.
