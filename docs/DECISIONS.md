@@ -441,3 +441,37 @@ Test 2 is now pinned to `GamutPolicy::ClipLinear` with the reason written next t
 **The corpus photographs were removed from `~/Downloads` during this session.** The real-photograph figures above are from `IMG_7604.HEIC` and are not reproducible on this machine until a photograph is put back; `real_photos.rs` and `gamut_policy.rs` both skip with an explanation, which is the arrangement those tests were built for. The ΔL\*/ΔC\*/ΔH decomposition on real pixels was not captured before the directory emptied — the test computes it now, and it is the one number in this entry that is still owed.
 
 The path was exercised after the fact against a **synthetic P3 gradient stand-in** built with libheif — a 1200 × 1600 saturated sweep, 85% of it outside sRGB, which is a corpus item and emphatically not a photograph. Reported only because the shape it gives is the same one at a larger amplitude: collapse falls from **15,556 of 128,007 pairs under the clip to 4,673** under the frozen policy, and the knee then recovers only **267** more. On saturated content the constant-luminance clip takes nearly all of the available gradient back, and the knee is buying the last few percent at full price.
+
+---
+
+## 2026-09-06 — the preview path confirmed in Tauri's own webview; spec v0.12 → v0.13
+
+`SPIKE-C.md` ends with a caveat rather than a result: *"The engine is right; the binding is not identical. This ran in **webkitgtk-6.0** via Epiphany 50. Tauri v2 on Linux uses **webkit2gtk-4.1**. Both are installed here, both are WebKit 2.52.5, and they share the WebGL implementation — but this has not been confirmed inside Tauri's own webview, and that confirmation belongs to the first v0.1 build."*
+
+It did not have to wait for a build. There is no browser that ships the 4.1 binding — Epiphany moved to 6.0 — but the binding can be driven directly: forty lines of PyGObject open a GTK 3 window with a `WebKit2.WebView` in it and point it at the same probe. `run-probe.py` now takes `--engine epiphany | webkit2gtk-4.1` so the two produce the same report in the same format, which is what makes them comparable rather than merely both green.
+
+Both runs below are the same machine on the same day, so the driver, the shaders and the generated GLSL are identical inputs.
+
+| | webkitgtk-6.0 (Epiphany 50) | **webkit2gtk-4.1** (embedded WebView) |
+|---|---|---|
+| WebKit | 2.52.5 | 2.52.5 |
+| `EXT_color_buffer_float` | present | present |
+| RGBA16F colour attachment | `COMPLETE` | `COMPLETE` |
+| RGBA16F linear filtering, *measured* | 0.5 at the midpoint | 0.5 at the midpoint |
+| transpiled GLSL | compiles and links, 4,683 / 9,292 B | compiles and links, 4,683 / 9,292 B |
+| uniform block | 784 of 65,536 bytes | 784 of 65,536 bytes |
+| six layers at 2 MP, median / p95 | 5.92 / 6.17 ms | **6.17 / 6.42 ms** |
+| WebGL2 vs wgpu | max 0.008789, mean 0.0001944, 3 channels over 1/255 | **max 0.008789, mean 0.0001944, 3 channels over 1/255** |
+| GL error at end | none | none |
+
+**The agreement figures match to every digit printed**, which is the part worth trusting: two bindings that ran the same GL code on the same driver produce the same pixels, and no amount of "both are WebKit 2.52.5" would have established that on its own.
+
+The one difference is timing — 6.17 ms against 5.92 at the §7.3 bound, about 4%, against a 16 ms budget. Small enough to be the GTK 3 compositing path or run-to-run variance, and not worth attributing without a reason to care. Both are inside budget at eight layers, two past the bound §7.3 sets.
+
+Worth noting in passing: the 6.0 run reproduced `SPIKE-C.md`'s 5.92 ms exactly, a day and a spec version later. That is a check on the harness, not on the engine.
+
+### What moves
+
+Nothing between states. `Preview renderer path: WebGL2 + WGSL→GLSL via naga` was already FROZEN; what this retires is the **residual risk attached to it**, and the register reason now says where it was re-run. The last item on the "before v0.1" list that was not a spike is done — the remaining work is v0.1 itself.
+
+`SPIKE-C.md` is not edited. It records what was measured on 2026-09-05 and its caveat was correct on the day.

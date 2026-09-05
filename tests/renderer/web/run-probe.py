@@ -3,10 +3,18 @@
 
 Spike C's capability clause is engine-specific: §2.3 asks about "this machine's
 WebKitGTK", because that is the webview Tauri uses on Linux. Chrome would answer a
-different question. So this serves the probe over loopback, opens it in Epiphany
-(WebKitGTK 4.1/6.0, the same engine), and waits for the page to POST its report back.
+different question. So this serves the probe over loopback, opens it in a WebKitGTK
+webview, and waits for the page to POST its report back.
 
-Usage:  python3 run-probe.py [--keep-open] [--timeout SECONDS]
+**Two bindings, and the difference is the point of `--engine`.** Spike C ran in
+Epiphany, which is **webkitgtk-6.0** (GTK 4). Tauri v2 on Linux embeds
+**webkit2gtk-4.1** (GTK 3). Both are the same upstream WebKit — 2.52.5 here — and
+`SPIKE-C.md` recorded that the capability result had not been confirmed in the one
+the product will actually ship inside, leaving it to the first v0.1 build. It does
+not have to wait that long: the 4.1 path below embeds a WebView directly, so the same
+probe answers for both and the two reports can be read side by side.
+
+Usage:  python3 run-probe.py [--engine epiphany|webkit2gtk-4.1] [--keep-open]
 """
 import argparse
 import http.server
@@ -48,14 +56,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             sys.stderr.write("  http: " + (fmt % a) + "\n")
 
 
-def report(r):
+def report(r, engine="?"):
     if not r:
         print("no result received")
         return 1
 
     caps, limits = r.get("caps", {}), r.get("limits", {})
     print("=" * 72)
-    print("Spike C — WebGL2 probe, WebKitGTK")
+    print(f"Spike C — WebGL2 probe, WebKitGTK via {engine}")
     print("=" * 72)
     print(f"  user agent   {r.get('ua','?')}")
     print(f"  GL version   {caps.get('version','?')}")
@@ -129,8 +137,93 @@ def report(r):
     return 0 if r.get("ok") else 1
 
 
+def run_in_epiphany(url, timeout, keep_open):
+    """The original path: Epiphany 50, which is webkitgtk-6.0 on GTK 4."""
+    profile = tempfile.mkdtemp(prefix="photodesk-spike-c-")
+    proc = subprocess.Popen(
+        # --profile already implies a private instance. Passing both is refused
+        # ("Cannot use --private-instance and --profile at the same time")
+        # and epiphany exits before loading anything, which looks exactly
+        # like a page that ran and never reported.
+        ["epiphany", "--profile", profile, url],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        if not DONE.wait(timeout):
+            print(f"timed out after {timeout}s with no report", file=sys.stderr)
+    finally:
+        if not keep_open:
+            time.sleep(0.4)
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        shutil.rmtree(profile, ignore_errors=True)
+
+
+def run_in_webkit2gtk_41(url, timeout, keep_open):
+    """The webview Tauri v2 actually embeds on Linux: webkit2gtk-4.1 on GTK 3.
+
+    Driven directly rather than through a browser, because there is no browser that
+    ships the 4.1 binding — Epiphany moved to 6.0 — and "the engine is the same
+    version" is a claim about the binding as much as about WebKit. A real window is
+    shown rather than an offscreen surface: WebGL wants a GL context, and a probe that
+    silently fell back to software would answer a question nobody asked.
+    """
+    import gi
+
+    gi.require_version("Gtk", "3.0")
+    gi.require_version("WebKit2", "4.1")
+    from gi.repository import GLib, Gtk, WebKit2
+
+    print(
+        f"engine: webkit2gtk-4.1, WebKit "
+        f"{WebKit2.get_major_version()}.{WebKit2.get_minor_version()}."
+        f"{WebKit2.get_micro_version()}",
+        file=sys.stderr,
+    )
+
+    view = WebKit2.WebView.new_with_context(WebKit2.WebContext.new_ephemeral())
+    settings = view.get_settings()
+    settings.set_enable_webgl(True)
+    settings.set_enable_write_console_messages_to_stdout(VERBOSE)
+    view.set_settings(settings)
+
+    window = Gtk.Window(title="PhotoDesk — Spike C probe (webkit2gtk-4.1)")
+    window.set_default_size(900, 700)
+    window.add(view)
+    window.connect("destroy", Gtk.main_quit)
+    window.show_all()
+    view.load_uri(url)
+
+    deadline = time.monotonic() + timeout
+
+    def tick():
+        if DONE.is_set():
+            if keep_open:
+                return True
+            Gtk.main_quit()
+            return False
+        if time.monotonic() > deadline:
+            print(f"timed out after {timeout}s with no report", file=sys.stderr)
+            Gtk.main_quit()
+            return False
+        return True
+
+    GLib.timeout_add(200, tick)
+    Gtk.main()
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--engine",
+        choices=("epiphany", "webkit2gtk-4.1"),
+        default="epiphany",
+        help="epiphany is webkitgtk-6.0 (what Spike C measured); "
+             "webkit2gtk-4.1 is what Tauri v2 embeds",
+    )
     ap.add_argument("--timeout", type=float, default=90.0)
     ap.add_argument("--keep-open", action="store_true")
     ap.add_argument("--json", help="also write the raw report here")
@@ -155,33 +248,16 @@ def main():
         url = f"http://127.0.0.1:{port}/probe.html"
         print(f"serving {HERE} at {url}", file=sys.stderr)
 
-        profile = tempfile.mkdtemp(prefix="photodesk-spike-c-")
-        proc = subprocess.Popen(
-            # --profile already implies a private instance. Passing both is refused
-            # ("Cannot use --private-instance and --profile at the same time")
-            # and epiphany exits before loading anything, which looks exactly
-            # like a page that ran and never reported.
-            ["epiphany", "--profile", profile, url],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        try:
-            if not DONE.wait(args.timeout):
-                print(f"timed out after {args.timeout}s with no report", file=sys.stderr)
-        finally:
-            if not args.keep_open:
-                time.sleep(0.4)
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-            shutil.rmtree(profile, ignore_errors=True)
+        if args.engine == "epiphany":
+            run_in_epiphany(url, args.timeout, args.keep_open)
+        else:
+            run_in_webkit2gtk_41(url, args.timeout, args.keep_open)
 
     if args.json and RESULT:
         with open(args.json, "w") as f:
             json.dump(RESULT, f, indent=2)
         print(f"raw report written to {args.json}", file=sys.stderr)
-    return report(RESULT)
+    return report(RESULT, args.engine)
 
 
 if __name__ == "__main__":

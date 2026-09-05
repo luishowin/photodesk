@@ -1,6 +1,6 @@
 # PhotoDesk — Architecture Specification
 
-**Version:** 0.12
+**Version:** 0.13
 **Author:** Luis Howin
 **Platform:** Fedora Workstation / GNOME
 **Status:** Master spec for the coding agent. **Phase 0 complete.**
@@ -38,7 +38,7 @@ This table is the contract. Anything not listed is undecided and needs a decisio
 | **Do not fork RapidRAW** | **FROZEN** | Spike A's gate failed 2 of 4 criteria (§2.1, `FORK-AUDIT.md`). Stage order is the statement order inside one vendored compute kernel, so "pipeline order is explicit and versioned" is unimplementable in a fork. |
 | **Build against `rawler` + `libheif` + our own shaders** | **FROZEN** | The §2.1 fallback, now the path. RapidRAW has no colour management and cannot open HEIF — §4 and §1's native subject were both greenfield inside the fork too. |
 | **Working space = linear Display P3, f16** | **FROZEN** | Spike B measured it (§2.2, `SPIKE-B.md`): ΔE 0.0956 max at thirty passes, under a tenth of the ΔE 1.0 budget. §2.2's f32 fallback is not needed and should not be built. |
-| **Preview renderer path: WebGL2 + WGSL→GLSL via naga** | **FROZEN** | Spike C (§2.3, `SPIKE-C.md`). Lowers, compiles in WebKitGTK, 5.92 ms for six layers at 2 MP against a 16 ms budget, and agrees with the wgpu path to max 0.0088 across 196,608 samples. §7.2's candidate, not its fallback. |
+| **Preview renderer path: WebGL2 + WGSL→GLSL via naga** | **FROZEN** | Spike C (§2.3, `SPIKE-C.md`). Lowers, compiles in WebKitGTK, 5.92 ms for six layers at 2 MP against a 16 ms budget, and agrees with the wgpu path to max 0.0088 across 196,608 samples. §7.2's candidate, not its fallback. **Re-run 2026-09-06 in webkit2gtk-4.1**, the binding Tauri v2 embeds: identical capabilities and identical agreement to every digit. |
 | **Shaders are authored fragment-first** | **FROZEN** | `@fragment`, `var<uniform>`, sampled textures, `@location(0)` returns. Compute, storage buffers and storage textures have no GLSL ES 3.0 target — naga refuses them by name — so using one anywhere breaks the preview path for every shader. |
 | **v1 pipeline stage ordering** | PROVISIONAL | → golden-image validation (§12.1) |
 | Document is stack-shaped on disk | PROVISIONAL | Until the stack becomes lossy for the graph (§6.2) |
@@ -144,6 +144,8 @@ Linear Display P3 f16 is the leading candidate (§4), not a decision. Prove it.
 ### 2.3 Spike C — preview renderer — **COMPLETE, GREEN**
 
 > **Result (2026-09-05):** the WGSL lowers to GLSL ES 3.00, WebKitGTK compiles it, `EXT_color_buffer_float` is present with RGBA16F colour-renderable and linear-filterable (measured, not inferred), six layers cost **5.92 ms at 2 MP** against a 16 ms budget, and the WebGL2 and wgpu paths agree to **max 0.0088** across 196,608 channel samples. **§7.2's candidate is frozen, not its fallback.** A compute shader of RapidRAW's shape is refused by naga naming `BUFFER_STORAGE | COMPUTE_SHADER | IMAGE_LOAD_STORE` — so the fragment result is a consequence of authoring fragment-first, not a coincidence. Full numbers in [`SPIKE-C.md`](SPIKE-C.md); harness in `tests/renderer/`.
+>
+> **Confirmed in Tauri's own binding (2026-09-06).** Spike C measured in Epiphany, which is webkitgtk-6.0 on GTK 4; Tauri v2 embeds **webkit2gtk-4.1** on GTK 3, and `SPIKE-C.md` left that gap open to the first v0.1 build. It did not have to wait: `run-probe.py --engine webkit2gtk-4.1` drives a WebView directly, and the two bindings return **identical capabilities, an identically compiled shader, and pixel agreement identical to every digit** — max 0.008789, mean 0.0001944, the same three channels over 1/255. Six layers cost 6.17 ms against 5.92, a 4% difference inside a 16 ms budget. The residual risk on the frozen preview path is retired.
 
 Establish whether the same WGSL can drive both paths on Fedora (§7.2). Success is a slider moving an image at proxy resolution inside the webview, at budget (§7.3), **and the working space actually representable** — RGBA16F as a colour-renderable target with linear filtering, which on WebGL2 means `EXT_color_buffer_float` on this machine's WebKitGTK. That second clause is not padding: without it Spike B can freeze f16 against a preview path that turns out unable to render to it, and the two spikes would each be individually green and jointly wrong.
 

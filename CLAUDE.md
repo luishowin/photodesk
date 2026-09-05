@@ -17,7 +17,7 @@ When something moves between states, append to `docs/DECISIONS.md` — what move
 
 ## Current state
 
-v0.0, **Phase 0 complete**. Spec is at v0.12. All three spikes have run and two of the three answers were not the expected ones.
+v0.0, **Phase 0 complete**. Spec is at v0.13. All three spikes have run and two of the three answers were not the expected ones.
 
 **Spike A** (2026-09-05) audited RapidRAW 1.6.3 and returned *do not fork*. Read `docs/FORK-AUDIT.md` before revisiting anything about the render path. Short version: the per-pixel chain is one `@compute` kernel in which stage order is the literal statement order, and vendored shaders are read-only, so the frozen "pipeline order is explicit and versioned" was unimplementable in a fork. Separately, RapidRAW has no colour management at all, cannot open HEIF, and on Linux ships every preview frame as a lossy JPEG over IPC.
 
@@ -35,11 +35,11 @@ v0.0, **Phase 0 complete**. Spec is at v0.12. All three spikes have run and two 
 
 Two things it dragged in. **Stage 13 now has a shader** — `tests/renderer/shaders/encode.wgsl`, checked to lower to GLSL ES 3.00 and to agree with the Rust reference to one colour-attachment step. And **RGBA16F attachments can truncate rather than round** (measured on RADV/RENOIR), which is a full-step bias that §12.1's thresholds have to allow for — §16 #15.
 
-**One thing still comes first, and it is not a spike:** confirm webkit2gtk-4.1 behaves like the webkitgtk-6.0 Spike C measured in.
+**The preview path is confirmed in Tauri's own webview.** Spike C measured in Epiphany (webkitgtk-6.0, GTK 4); Tauri v2 embeds webkit2gtk-4.1 (GTK 3), and `SPIKE-C.md` left that to the first v0.1 build. `run-probe.py --engine webkit2gtk-4.1` drives the 4.1 WebView directly, and the two bindings return identical capabilities, an identically compiled shader, and pixel agreement **identical to every digit** — max 0.008789, mean 0.0001944. Six layers cost 6.17 ms against 5.92, inside a 16 ms budget either way. **Nothing on the "before v0.1" list remains; the next work is v0.1 itself.**
 
 **The front end has no framework** (2026-09-06, §10.3): TypeScript and Vite, zero runtime dependencies. Don't add React or a component library to make a panel easier — §11's slider contract is the reason the decision went this way, and a library's slider would be overridden rather than used. Panels, undo, focus and the keymap are hand-written by design.
 
-**Where the work is.** All of Phase 0 sits on the branch **`spike-a-fork-audit`**, nine commits, nothing pushed — `main` is still at the pre-code commit and tracks `origin/main`. The branch name is left over from when it held only Spike A and is now misleading: it carries all three spikes, the front-end decision, the HEVC findings, the real-photo verification and the export gamut policy. Rename it or merge to `main` before pushing; don't assume `main` reflects any of this.
+**Where the work is.** All of Phase 0 sits on the branch **`spike-a-fork-audit`**, ten commits, nothing pushed — `main` is still at the pre-code commit and tracks `origin/main`. The branch name is left over from when it held only Spike A and is now misleading: it carries all three spikes, the front-end decision, the HEVC findings, the real-photo verification, the export gamut policy and the webkit2gtk-4.1 confirmation. Rename it or merge to `main` before pushing; don't assume `main` reflects any of this.
 
 ## Things that will bite
 
