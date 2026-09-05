@@ -1,0 +1,394 @@
+<!doctype html>
+<!--
+  PhotoDesk status page.
+
+  Hand-written, no build step, no framework, no CDN, no fetched fonts.
+  Updated on request only — it is a status page, not a living document.
+
+  It obeys the app's own rule (ARCHITECTURE.md §10.1): the interface is
+  monochrome, and colour appears only where colour is the information.
+  There is no photograph here, so there is no colour here. FROZEN and
+  PROVISIONAL are distinguished by weight and value, never by hue.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PhotoDesk</title>
+<meta name="description" content="A display-referred photo editor for Fedora / GNOME. Architecture spec and build status.">
+<style>
+  :root {
+    --canvas:         #333333;
+    --surface:        #1e1e1e;
+    --surface-raised: #252525;
+    --border:         #3a3a3a;
+    --text:           #f2f2f2;
+    --text-dim:       #8c8c8c;
+    --text-mute:      #5a5a5a;
+    --focus:          #ffffff;
+
+    --sans: "Adwaita Sans", Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", "DejaVu Sans Mono", monospace;
+
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--surface);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 46rem;
+    margin: 0 auto;
+    padding: 5rem 1.5rem 7rem;
+  }
+
+  /* ── masthead ─────────────────────────────────────────── */
+
+  header { margin-bottom: 4.5rem; }
+
+  h1 {
+    font-size: 2rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin: 0 0 0.25rem;
+  }
+
+  .tagline {
+    color: var(--text-dim);
+    margin: 0 0 2rem;
+    font-size: 1.0625rem;
+  }
+
+  .thesis {
+    margin: 0 0 1.5rem;
+    max-width: 40rem;
+  }
+
+  .thesis:last-of-type { margin-bottom: 0; }
+
+  .test {
+    border-left: 2px solid var(--border);
+    padding-left: 1.25rem;
+    margin: 2rem 0 0;
+    color: var(--text-dim);
+  }
+
+  .test strong { color: var(--text); font-weight: 500; }
+
+  /* ── status strip ─────────────────────────────────────── */
+
+  .status {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1.25rem 1.5rem;
+    margin: 3rem 0 0;
+  }
+
+  .status-line {
+    font-family: var(--mono);
+    font-size: 0.8125rem;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin: 0 0 0.75rem;
+  }
+
+  .status-line b { color: var(--text); font-weight: 500; }
+
+  .status p { margin: 0; color: var(--text-dim); font-size: 0.9375rem; }
+
+  /* ── sections ─────────────────────────────────────────── */
+
+  section { margin-top: 4.5rem; }
+
+  h2 {
+    font-size: 0.75rem;
+    font-weight: 500;
+    font-family: var(--mono);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin: 0 0 1.5rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 2rem 0 0.5rem;
+  }
+
+  h3:first-of-type { margin-top: 0; }
+
+  p { margin: 0 0 1rem; }
+
+  section p:last-child { margin-bottom: 0; }
+
+  /* ── tables ───────────────────────────────────────────── */
+
+  .scroll { overflow-x: auto; margin: 0 0 0.5rem; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.9375rem;
+    min-width: 30rem;
+  }
+
+  th {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-mute);
+    padding: 0 1.25rem 0.6rem 0;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  td {
+    padding: 0.7rem 1.25rem 0.7rem 0;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+    color: var(--text-dim);
+  }
+
+  td:first-child { color: var(--text); padding-right: 2rem; }
+
+  th:last-child, td:last-child { padding-right: 0; }
+
+  tr:last-child td { border-bottom: none; }
+
+  /* State is carried by value and weight, never by hue. */
+  .state {
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .frozen { color: var(--text); font-weight: 500; }
+  .prov   { color: var(--text-mute); }
+
+  .est {
+    font-family: var(--mono);
+    font-size: 0.8125rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .now td { color: var(--text); }
+  .now td:first-child::after {
+    content: "current";
+    display: block;
+    font-family: var(--mono);
+    font-size: 0.625rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-mute);
+    margin-top: 0.15rem;
+  }
+
+  /* ── spikes ───────────────────────────────────────────── */
+
+  .spike {
+    border-left: 2px solid var(--border);
+    padding-left: 1.25rem;
+    margin-bottom: 1.75rem;
+  }
+
+  .spike:last-child { margin-bottom: 0; }
+  .spike h3 { margin-top: 0; }
+  .spike p { color: var(--text-dim); margin-bottom: 0; }
+
+  /* ── links & footer ───────────────────────────────────── */
+
+  a {
+    color: var(--text);
+    text-decoration: none;
+    border-bottom: 1px solid var(--text-mute);
+    padding-bottom: 1px;
+  }
+
+  a:hover { border-bottom-color: var(--text); }
+  a:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 1px; }
+
+  .docs { list-style: none; padding: 0; margin: 0; }
+
+  .docs li { border-bottom: 1px solid var(--border); }
+  .docs li:last-child { border-bottom: none; }
+
+  .docs a {
+    display: block;
+    padding: 0.9rem 0;
+    border-bottom: none;
+  }
+
+  .docs a:hover .doc-name { border-bottom-color: var(--text); }
+
+  .doc-name {
+    font-family: var(--mono);
+    font-size: 0.875rem;
+    border-bottom: 1px solid var(--text-mute);
+    padding-bottom: 1px;
+  }
+
+  .doc-note {
+    display: block;
+    color: var(--text-dim);
+    font-size: 0.875rem;
+    margin-top: 0.2rem;
+  }
+
+  footer {
+    margin-top: 5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    color: var(--text-mute);
+    font-size: 0.8125rem;
+  }
+
+  footer p { margin: 0 0 0.4rem; }
+  footer p:last-child { margin-bottom: 0; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.875em;
+    color: var(--text);
+  }
+
+  @media (max-width: 34rem) {
+    .wrap { padding: 3rem 1.25rem 4rem; }
+    h1 { font-size: 1.625rem; }
+    section { margin-top: 3.5rem; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>PhotoDesk</h1>
+  <p class="tagline">A display-referred photo editor for Fedora&nbsp;/&nbsp;GNOME.</p>
+
+  <p class="thesis">Its native subject is a finished image — an iPhone HEIF, a JPEG, a screenshot — that already has a rendering intent baked in by the device that made it.</p>
+
+  <p class="thesis">It is not a RAW laboratory. It doesn't reconstruct scene radiance, doesn't ask you to pick a demosaic algorithm or a view transform. RAW is an <em>input</em>, not a worldview.</p>
+
+  <p class="test">The test for any feature: <strong>does it shorten the path between opening a photo and being happy with it?</strong></p>
+
+  <div class="status">
+    <p class="status-line">Status — <b>v0.0 · pre-code</b> · spec v0.4</p>
+    <p>There is no application yet, and that is on purpose. Three spikes come before any product code, on the argument that discovering their answers in month four is far more expensive than spending three weeks on them now.</p>
+  </div>
+</header>
+
+<section>
+  <h2>The governing principle</h2>
+  <p>Freeze interfaces and invariants early. Freeze implementation choices only after a spike proves them.</p>
+  <p>Two rules follow, and the project is held to both. <strong>Every frozen item carries a written reason</strong> — if it can't be justified in a sentence, it isn't frozen, it's a habit. <strong>Every provisional item names the spike that resolves it</strong> — "provisional" without an exit condition is just indecision with better PR.</p>
+</section>
+
+<section>
+  <h2>The register</h2>
+  <div class="scroll">
+  <table>
+    <thead>
+      <tr><th>Item</th><th>State</th><th>Reason / exit condition</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>The source file is never modified</td><td class="state frozen">Frozen</td><td>Non-destructive is the product. Enforced by a byte-identity test on every commit</td></tr>
+      <tr><td>One shader source, preview and export</td><td class="state frozen">Frozen</td><td>Separate paths guarantee undiscoverable WYSIWYG drift</td></tr>
+      <tr><td>The document is declarative and versioned</td><td class="state frozen">Frozen</td><td>Presets, history, batch and agent editing all fall out of it for free</td></tr>
+      <tr><td>Pipeline order is explicit and versioned</td><td class="state frozen">Frozen</td><td>It's the contract. Implicit order is unmigrateable</td></tr>
+      <tr><td>AI is removable without touching the render path</td><td class="state frozen">Frozen</td><td>Protects the editor from the volatile part</td></tr>
+      <tr><td>Every cache is regenerable</td><td class="state frozen">Frozen</td><td>No cache is ever load-bearing state</td></tr>
+      <tr><td>Masks read the layer's input</td><td class="state frozen">Frozen</td><td>Unnamed, it gets chosen accidentally and differently in preview and export</td></tr>
+      <tr><td>History is session-only</td><td class="state frozen">Frozen</td><td>A sidecar accumulating every gesture grows without bound</td></tr>
+      <tr><td>Fork RapidRAW, or build directly</td><td class="state prov">Provisional</td><td>Spike A</td></tr>
+      <tr><td>Working space — linear Display P3, f16</td><td class="state prov">Provisional</td><td>Spike B</td></tr>
+      <tr><td>Preview renderer path</td><td class="state prov">Provisional</td><td>Spike C</td></tr>
+      <tr><td>v1 pipeline stage ordering</td><td class="state prov">Provisional</td><td>Golden-image validation</td></tr>
+      <tr><td>Front-end framework</td><td class="state prov">Provisional</td><td>Spike A — a fork inherits React + Vite</td></tr>
+      <tr><td>v1 discards iPhone HDR gain maps</td><td class="state prov">Provisional</td><td>An HDR display, or the first wanted gain-mapped export</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>Phase 0 — before any product code</h2>
+
+  <div class="spike">
+    <h3>Spike A — fork audit</h3>
+    <p>Classify every RapidRAW subsystem as <code>KEEP</code>, <code>ADAPT</code>, <code>REPLACE</code> or <code>AVOID</code>. Four gate criteria, all of which must hold — otherwise the fork doesn't happen and RapidRAW becomes an architectural reference instead. A fork you have to rewrite is slower than building from scratch, and you'd discover it in month four.</p>
+  </div>
+
+  <div class="spike">
+    <h3>Spike B — colour validation harness</h3>
+    <p>Prove linear Display P3 f16 rather than assuming it, against a corpus with known values and ΔE2000 thresholds. The test that matters most is a deep-shadow ramp: half float has ~11 bits of significand, and linear encoding spends most of them on highlights where the eye cares least. Built standalone so it survives either fork outcome, and kept afterwards as a permanent suite.</p>
+  </div>
+
+  <div class="spike">
+    <h3>Spike C — preview renderer</h3>
+    <p>Establish whether one shader source can drive both preview and export on this platform. Scouting has already found that RapidRAW's chain is compute end to end, and WebGL2 has no compute shaders, no storage textures and no storage buffers — so hand-writing the preview chain is the expected outcome rather than a contingency.</p>
+  </div>
+</section>
+
+<section>
+  <h2>Roadmap</h2>
+  <div class="scroll">
+  <table>
+    <thead>
+      <tr><th>Version</th><th>Scope</th><th>Estimate</th></tr>
+    </thead>
+    <tbody>
+      <tr class="now"><td>0.0</td><td>The three spikes. No product.</td><td class="est">3 weeks</td></tr>
+      <tr><td>0.1</td><td>Open a HEIF, adjust light and temperature, before/after, export — colour-correct end to end. Document model, graph compile, source-preservation and golden tests running</td><td class="est">3 weeks</td></tr>
+      <tr><td>0.2</td><td>Crop, rotate, straighten. Presets, copy/paste edits. Undo/redo at gesture granularity</td><td class="est">2 weeks</td></tr>
+      <tr><td>0.3</td><td>Colour: curves, HSL, grading wheels, vibrance</td><td class="est">3 weeks</td></tr>
+      <tr><td>0.4</td><td>Masks: brush, linear, radial, luminance, colour range, composition</td><td class="est">4 weeks</td></tr>
+      <tr><td>0.5</td><td>AI: segmentation, inpaint, denoise, upscale, OCR behind a provider interface</td><td class="est">3 weeks</td></tr>
+      <tr><td>0.6</td><td>RAW prefix</td><td class="est">1–2 weeks</td></tr>
+      <tr><td>0.7</td><td>Workflow: folders, ratings, search, batch export</td><td class="est">4 weeks</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p style="margin-top:1.5rem;color:var(--text-dim)">v0.1 deliberately excludes curves and HSL. They're the fun part, which is exactly why they get deferred — colour correctness, the document model and the test harness are the parts that are expensive to retrofit and impossible to bolt on later.</p>
+</section>
+
+<section>
+  <h2>Documents</h2>
+  <ul class="docs">
+    <li><a href="ARCHITECTURE.md"><span class="doc-name">ARCHITECTURE.md</span><span class="doc-note">The master spec, v0.4. Philosophy, colour, pipeline, document model, render architecture, masks, AI, visual system, testing.</span></a></li>
+    <li><a href="DECISIONS.md"><span class="doc-name">DECISIONS.md</span><span class="doc-note">Append-only log of what moved between states, what resolved it, and when.</span></a></li>
+    <li><a href="REVIEW-2026-09-05.md"><span class="doc-name">REVIEW-2026-09-05.md</span><span class="doc-note">Pre-code spec review. What was contradictory, what was missing, and what is still open.</span></a></li>
+    <li><a href="https://github.com/luishowin/photodesk"><span class="doc-name">github.com/luishowin/photodesk</span><span class="doc-note">The repository.</span></a></li>
+  </ul>
+</section>
+
+<footer>
+  <p>Specification-only until Spike A concludes. RapidRAW, the candidate fork base, is AGPL-3.0; a licensing review gates that decision.</p>
+  <p>Luis Howin · Fedora Workstation / GNOME</p>
+</footer>
+
+</div>
+</body>
+</html>
