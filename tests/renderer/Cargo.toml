@@ -1,0 +1,17 @@
+[package]
+name = "photodesk-renderer-spike"
+description = "Spike C — preview renderer. Does one WGSL source drive both paths? (ARCHITECTURE.md §2.3)"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+naga.workspace = true
+
+[dev-dependencies]
+wgpu.workspace = true
+half.workspace = true
+pollster.workspace = true
+bytemuck.workspace = true

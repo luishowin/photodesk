@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["tests/color"]
+members = ["tests/color", "tests/renderer"]
 
 [workspace.package]
 edition = "2024"
@@ -8,5 +8,9 @@ rust-version = "1.98"
 license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
-half = "2"
+half = { version = "2", features = ["bytemuck"] }
 lcms2 = "6"
+naga = { version = "30", features = ["wgsl-in", "glsl-out"] }
+wgpu = "30"
+pollster = "1"
+bytemuck = { version = "1", features = ["derive"] }

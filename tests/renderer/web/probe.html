@@ -1,0 +1,454 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Spike C — WebGL2 probe</title>
+<style>
+  body { background:#333; color:#f2f2f2; font:13px system-ui, sans-serif; margin:0; padding:16px }
+  pre  { white-space:pre-wrap; font:12px ui-monospace, monospace; line-height:1.5 }
+  canvas { display:block; margin:8px 0; border:1px solid #3a3a3a }
+</style>
+<canvas id="c" width="480" height="270"></canvas>
+<pre id="log">running…</pre>
+<script type="module">
+const R = { ua: navigator.userAgent, steps: [], caps: {}, limits: {}, perf: [], errors: [] };
+const log = (s) => { document.getElementById('log').textContent += '\n' + s; };
+const note = (k, v) => { R.steps.push([k, v]); log(`${k}: ${v}`); };
+
+function finish() {
+  fetch('/result', { method:'POST', headers:{'content-type':'application/json'},
+                     body: JSON.stringify(R) }).catch(() => {});
+}
+
+try {
+  // ---- context -----------------------------------------------------------
+  const canvas = document.getElementById('c');
+  const gl = canvas.getContext('webgl2', { antialias:false, preserveDrawingBuffer:false });
+  if (!gl) { throw new Error('no webgl2 context'); }
+  note('webgl2', 'available');
+  R.caps.version  = gl.getParameter(gl.VERSION);
+  R.caps.glsl     = gl.getParameter(gl.SHADING_LANGUAGE_VERSION);
+  R.caps.vendor   = gl.getParameter(gl.VENDOR);
+  R.caps.renderer = gl.getParameter(gl.RENDERER);
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  if (dbg) R.caps.unmaskedRenderer = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+  note('renderer', `${R.caps.renderer} / ${R.caps.unmaskedRenderer ?? 'masked'}`);
+  note('glsl', R.caps.glsl);
+
+  // ---- §2.3's clause: RGBA16F colour-renderable, with linear filtering ----
+  const extColorBuffer = gl.getExtension('EXT_color_buffer_float');
+  const extLinear      = gl.getExtension('OES_texture_float_linear');
+  const extHalfLinear  = gl.getExtension('OES_texture_half_float_linear');
+  R.caps.EXT_color_buffer_float       = !!extColorBuffer;
+  R.caps.OES_texture_float_linear     = !!extLinear;
+  R.caps.OES_texture_half_float_linear= !!extHalfLinear;
+  note('EXT_color_buffer_float', !!extColorBuffer);
+  note('OES_texture_float_linear', !!extLinear);
+  note('OES_texture_half_float_linear', !!extHalfLinear);
+  R.caps.allExtensions = gl.getSupportedExtensions();
+
+  const mkTex = (w, h, data = null, filter = gl.LINEAR) => {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.FLOAT, data);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return t;
+  };
+
+  // Is RGBA16F actually a complete colour attachment?
+  const probeTex = mkTex(64, 64);
+  const probeFbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, probeFbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, probeTex, 0);
+  const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  R.caps.rgba16fRenderable = status === gl.FRAMEBUFFER_COMPLETE;
+  R.caps.framebufferStatus = status === gl.FRAMEBUFFER_COMPLETE ? 'COMPLETE' : '0x' + status.toString(16);
+  note('RGBA16F colour-renderable', R.caps.framebufferStatus);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+  // Linear filtering on RGBA16F is a separate question from renderability, and §2.3
+  // asks for both. Measured, not inferred: OES_texture_half_float_linear does not
+  // exist in WebGL2 because RGBA16F filtering is core there, so its absence proves
+  // nothing either way. A 2x1 texture of 0 and 1 sampled exactly between the texels
+  // gives 0.5 under LINEAR and 0 or 1 under NEAREST.
+  {
+    const two = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, two);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, 2, 1, 0, gl.RGBA, gl.FLOAT,
+                  new Float32Array([0,0,0,1, 1,1,1,1]));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    const vs = `#version 300 es
+      void main() {
+        vec2 p = vec2(float(gl_VertexID / 2) * 4.0 - 1.0,
+                      float(gl_VertexID % 2) * 4.0 - 1.0);
+        gl_Position = vec4(p, 0.0, 1.0);
+      }`;
+    const fs = `#version 300 es
+      precision highp float;
+      uniform sampler2D t;
+      out vec4 o;
+      void main() { o = texture(t, vec2(0.5, 0.5)); }`;
+    const mk = (ty, src) => { const sh = gl.createShader(ty); gl.shaderSource(sh, src);
+                              gl.compileShader(sh); return sh; };
+    const pr = gl.createProgram();
+    gl.attachShader(pr, mk(gl.VERTEX_SHADER, vs));
+    gl.attachShader(pr, mk(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(pr);
+    const out = mkTex(1, 1);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, out, 0);
+    gl.viewport(0, 0, 1, 1);
+    gl.useProgram(pr);
+    gl.bindVertexArray(gl.createVertexArray());
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, two);
+    gl.uniform1i(gl.getUniformLocation(pr, 't'), 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const px = new Float32Array(4);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, px);
+    R.caps.rgba16fLinearSample = px[0];
+    R.caps.rgba16fLinearFilters = Math.abs(px[0] - 0.5) < 0.05;
+    note('RGBA16F linear filtering (measured)',
+         `sampled ${px[0].toFixed(4)} at the midpoint -> ${R.caps.rgba16fLinearFilters ? 'LINEAR' : 'NEAREST'}`);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  R.limits.maxTextureSize   = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+  R.limits.maxUniformBlockSize = gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE);
+  R.limits.maxFragmentUniformBlocks = gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_BLOCKS);
+  R.limits.maxRenderbufferSize = gl.getParameter(gl.MAX_RENDERBUFFER_SIZE);
+  note('max texture', R.limits.maxTextureSize);
+  note('max UBO bytes', R.limits.maxUniformBlockSize);
+
+  // ---- the transpiled shaders, loaded rather than hand-written ------------
+  const [vsSrc, fsSrc] = await Promise.all([
+    fetch('generated/adjust.vert').then(r => r.text()),
+    fetch('generated/adjust.frag').then(r => r.text()),
+  ]);
+  R.shaderBytes = { vert: vsSrc.length, frag: fsSrc.length };
+
+  const compile = (type, src, label) => {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      throw new Error(`${label} failed to compile:\n${gl.getShaderInfoLog(s)}`);
+    }
+    return s;
+  };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, vsSrc, 'naga vertex'));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fsSrc, 'naga fragment'));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    throw new Error('link failed:\n' + gl.getProgramInfoLog(prog));
+  }
+  R.caps.transpiledShaderCompiles = true;
+  note('naga-generated GLSL', 'compiled and linked in WebKitGTK');
+
+  // ---- bind the uniform block by introspection ----------------------------
+  const blockName = gl.getActiveUniformBlockName(prog, 0);
+  const blockSize = gl.getActiveUniformBlockParameter(prog, 0, gl.UNIFORM_BLOCK_DATA_SIZE);
+  R.ubo = { name: blockName, size: blockSize };
+  note('uniform block', `${blockName} = ${blockSize} bytes`);
+  gl.uniformBlockBinding(prog, 0, 0);
+
+  const uboData = new ArrayBuffer(blockSize);
+  const f32 = new Float32Array(uboData);
+  const u32 = new Uint32Array(uboData);
+  const ubo = gl.createBuffer();
+  gl.bindBuffer(gl.UNIFORM_BUFFER, ubo);
+  gl.bufferData(gl.UNIFORM_BUFFER, uboData, gl.DYNAMIC_DRAW);
+  gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, ubo);
+
+  // Offsets, queried rather than assumed — std140 padding is exactly the kind of
+  // thing that is silently wrong when hand-computed.
+  const wanted = ['exposure','contrast','temperature','tint','highlights','shadows',
+                  'blacks','vibrance','saturation','curve_counts'];
+  const names = [];
+  const nUniforms = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < nUniforms; i++) names.push(gl.getActiveUniform(prog, i).name);
+  R.uniformNames = names;
+  // naga names a block member three different ways depending on its type, and only
+  // one of them is the bare field name:
+  //     scalar   _group_0_binding_0_fs.exposure
+  //     array    _group_0_binding_0_fs.luma_curve[0]
+  //     struct   _group_0_binding_0_fs.grade_shadows.offset
+  // Matching only the first is why the initial agreement run compared a reference
+  // rendered with real curves against a render that had zeros in place of seven
+  // parameter groups — a 1.13 disagreement that was entirely an input mismatch.
+  const offsetOf = (field) => {
+    const full = names.find(n => n.endsWith('.' + field) || n === field)
+              ?? names.find(n => n.endsWith('.' + field + '[0]'))
+              ?? names.find(n => n.includes('.' + field + '.'));
+    if (!full) return undefined;
+    return gl.getActiveUniforms(prog, gl.getUniformIndices(prog, [full]), gl.UNIFORM_OFFSET)[0];
+  };
+  // std140 pads array elements to 16 bytes, which for vec4 is the natural stride —
+  // but querying costs nothing and a hand-assumed stride is exactly the kind of thing
+  // that is silently wrong on the one type that does not match.
+  const strideOf = (field) => {
+    const full = names.find(n => n.endsWith('.' + field + '[0]'));
+    if (!full) return 16;
+    return gl.getActiveUniforms(prog, gl.getUniformIndices(prog, [full]),
+                                gl.UNIFORM_ARRAY_STRIDE)[0] || 16;
+  };
+  const off = {};
+  for (const w of wanted) {
+    const full = names.find(n => n.endsWith('.' + w) || n === w);
+    if (!full) continue;
+    const idx = gl.getUniformIndices(prog, [full])[0];
+    off[w] = gl.getActiveUniforms(prog, [idx], gl.UNIFORM_OFFSET)[0];
+  }
+  R.uboOffsets = off;
+  note('uniform offsets resolved', Object.keys(off).join(', ') || 'NONE');
+
+  // ---- a 2 MP proxy, per §7.1 --------------------------------------------
+  const W = 1920, H = 1080;                         // ~2.07 MP
+  R.proxy = { w: W, h: H, megapixels: +(W*H/1e6).toFixed(2) };
+  const src = new Float32Array(W * H * 4);
+  for (let y = 0, i = 0; y < H; y++) {
+    for (let x = 0; x < W; x++, i += 4) {
+      const u = x / W, v = y / H;
+      const d = Math.sin(u * 40) * Math.cos(v * 37) * 0.06;   // some structure to filter
+      src[i]   = Math.min(1, Math.max(0, u * 0.9 + d));
+      src[i+1] = Math.min(1, Math.max(0, v * 0.8 + d * 0.7));
+      src[i+2] = Math.min(1, Math.max(0, (1 - u * v) * 0.7 + d));
+      src[i+3] = 1;
+    }
+  }
+  const srcTex = mkTex(W, H, src);
+  note('proxy uploaded', `${W}x${H} RGBA16F (${R.proxy.megapixels} MP)`);
+
+  // Ping-pong targets, so a multi-layer stack is real passes rather than one pass
+  // measured N times.
+  const targets = [0,1].map(() => {
+    const t = mkTex(W, H);
+    const f = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      throw new Error('RGBA16F render target incomplete at proxy size');
+    }
+    return { tex: t, fbo: f };
+  });
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  gl.useProgram(prog);
+  const texLoc = names.find(n => n.includes('src_texture'));
+  if (texLoc) gl.uniform1i(gl.getUniformLocation(prog, texLoc), 0);
+
+  // §5 makes the stack the loop; each layer is one fused pass here.
+  function renderStack(layers, t) {
+    let input = srcTex;
+    for (let i = 0; i < layers; i++) {
+      const dst = targets[i % 2];
+      gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+      gl.viewport(0, 0, W, H);
+      if (off.exposure  !== undefined) f32[off.exposure  / 4] = Math.sin(t + i) * 0.5;
+      if (off.contrast  !== undefined) f32[off.contrast  / 4] = Math.cos(t) * 20;
+      if (off.saturation!== undefined) f32[off.saturation/ 4] = Math.sin(t * 0.7) * 15;
+      if (off.curve_counts !== undefined) u32[off.curve_counts / 4] = 0;
+      gl.bindBuffer(gl.UNIFORM_BUFFER, ubo);
+      gl.bufferSubData(gl.UNIFORM_BUFFER, 0, uboData);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, input);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      input = dst.tex;
+    }
+    return input;
+  }
+
+  // ---- measurement -------------------------------------------------------
+  // §7.3: 16 ms per frame at proxy, and 60 fps with up to 6 layers.
+  // WebKit clamps performance.now() to 1 ms against timing attacks, so a single 3 ms
+  // frame is measured with 33% granularity and a table of whole numbers is an artefact
+  // of the clock, not a property of the renderer. Each sample therefore times a batch
+  // of BATCH frames and divides, which puts the measured interval well above the clamp.
+  R.timerResolutionMs = (() => {
+    let best = Infinity, t0 = performance.now();
+    for (let i = 0; i < 2e6 && best === Infinity; i++) {
+      const t1 = performance.now();
+      if (t1 > t0) best = t1 - t0;
+    }
+    return best;
+  })();
+  note('performance.now() resolution', `${R.timerResolutionMs} ms`);
+
+  const BATCH = 12;
+  const measure = (layers) => new Promise(resolve => {
+    const samples = [];
+    let n = 0;
+    const step = () => {
+      const t0 = performance.now();
+      for (let k = 0; k < BATCH; k++) renderStack(layers, (n * BATCH + k) * 0.05);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.finish();                       // wall-clock, not queue-submit time
+      samples.push((performance.now() - t0) / BATCH);
+      if (++n < 20) { requestAnimationFrame(step); }
+      else {
+        samples.sort((a,b) => a-b);
+        resolve({
+          layers, batch: BATCH,
+          median: +samples[10].toFixed(3),
+          p95: +samples[18].toFixed(3),
+          min: +samples[0].toFixed(3),
+          max: +samples[19].toFixed(3),
+        });
+      }
+    };
+    requestAnimationFrame(step);
+  });
+
+  for (const layers of [1, 2, 4, 6, 8]) {
+    const m = await measure(layers);
+    R.perf.push(m);
+    note(`${layers} layer(s) @ ${R.proxy.megapixels} MP`,
+         `median ${m.median} ms  p95 ${m.p95} ms  (budget 16)`);
+    const e = gl.getError();
+    if (e !== gl.NO_ERROR) { R.errors.push(`gl error 0x${e.toString(16)} after ${layers} layers`); }
+  }
+
+  // ---- §0's invariant: do the two paths agree on pixels? -----------------
+  // Compiling is not correctness. §0 freezes "one shader source, preview and export"
+  // because separate paths guarantee undiscoverable WYSIWYG drift — and a transpiled
+  // shader that compiles but computes something slightly different is that drift with
+  // a build step for a disguise. The reference below was rendered from the *same WGSL*
+  // by wgpu on the native path.
+  try {
+    const [srcBuf, refBuf, params] = await Promise.all([
+      fetch('generated/source.f32').then(r => r.ok ? r.arrayBuffer() : null),
+      fetch('generated/reference.f32').then(r => r.ok ? r.arrayBuffer() : null),
+      fetch('generated/params.json').then(r => r.ok ? r.json() : null),
+    ]);
+    if (!srcBuf || !refBuf || !params) {
+      R.agreement = { skipped: 'no wgpu reference on disk — run: cargo test -p photodesk-renderer-spike' };
+      note('pixel agreement', 'SKIPPED (no reference)');
+    } else {
+      const N = params.size;
+      const srcData = new Float32Array(srcBuf);
+      const refData = new Float32Array(refBuf);
+
+      // NEAREST, to match the native reference: any filtering difference would be
+      // attributed to the maths.
+      const aTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, aTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, N, N, 0, gl.RGBA, gl.FLOAT, srcData);
+      for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST],
+                            [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]])
+        gl.texParameteri(gl.TEXTURE_2D, k, v);
+
+      const aOut = mkTex(N, N);
+      const aFbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, aFbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, aOut, 0);
+
+      // Place the same parameters at std140 offsets queried from the linked program,
+      // rather than reusing the native side's bytes. Agreement then means the two
+      // layouts genuinely match, not that they shared a buffer.
+      const put = (field, ...vals) => {
+        const o = offsetOf(field);
+        if (o === undefined) { R.agreement_missing = (R.agreement_missing || []).concat(field); return; }
+        vals.forEach((v, i) => { f32[o / 4 + i] = v; });
+      };
+      const putU = (field, ...vals) => {
+        const o = offsetOf(field);
+        if (o === undefined) return;
+        vals.forEach((v, i) => { u32[o / 4 + i] = v; });
+      };
+      new Float32Array(uboData).fill(0);
+      for (const k of ['temperature','tint','exposure','highlights','shadows','blacks',
+                       'contrast','vibrance','saturation','grade_blend','grade_balance'])
+        put(k, params[k]);
+      putU('curve_counts', ...params.curve_counts);
+      for (const [name, rows] of [['luma_curve', params.luma_curve], ['red_curve', params.red_curve],
+                                  ['hsl', params.hsl]]) {
+        const o = offsetOf(name);
+        if (o === undefined) { R.agreement_missing = (R.agreement_missing || []).concat(name); continue; }
+        const stride = strideOf(name) / 4;
+        rows.forEach((row, i) => row.forEach((v, j) => { f32[o / 4 + i * stride + j] = v; }));
+      }
+      for (const g of ['grade_shadows','grade_midtones','grade_highlights','grade_global'])
+        put(g, ...params[g]);
+
+      gl.bindBuffer(gl.UNIFORM_BUFFER, ubo);
+      gl.bufferSubData(gl.UNIFORM_BUFFER, 0, uboData);
+      gl.viewport(0, 0, N, N);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, aTex);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      const got = new Float32Array(N * N * 4);
+      gl.readPixels(0, 0, N, N, gl.RGBA, gl.FLOAT, got);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+      // GL reads the framebuffer bottom-up while wgpu copies the texture top-down, so
+      // the two can differ by a vertical flip that has nothing to do with the shader.
+      // Score both and report which orientation matched, rather than picking one and
+      // calling a convention mismatch a maths error.
+      const score = (flip) => {
+        let max = 0, sum = 0, n = 0, over = 0;
+        for (let y = 0; y < N; y++) {
+          const ry = flip ? (N - 1 - y) : y;
+          for (let x = 0; x < N; x++) {
+            for (let c = 0; c < 3; c++) {
+              const a = got[(y * N + x) * 4 + c];
+              const b = refData[(ry * N + x) * 4 + c];
+              const d = Math.abs(a - b);
+              if (d > max) max = d;
+              sum += d; n++;
+              if (d > 1 / 255) over++;
+            }
+          }
+        }
+        return { max, mean: sum / n, samples: n, overOneCode: over };
+      };
+      if ((R.agreement_missing || []).length) {
+        R.agreement = {
+          invalid: 'parameters could not be located in the uniform block',
+          missingFields: R.agreement_missing,
+        };
+        note('pixel agreement', 'INVALID — missing ' + R.agreement_missing.join(', ') +
+             '; the two sides would be fed different inputs, so no comparison was made');
+        throw new Error('agreement inputs incomplete');
+      }
+      const direct = score(false), flipped = score(true);
+      const best = flipped.max < direct.max ? flipped : direct;
+      R.agreement = {
+        orientation: flipped.max < direct.max ? 'vertically flipped' : 'direct',
+        max: +best.max.toPrecision(4),
+        mean: +best.mean.toPrecision(4),
+        samples: best.samples,
+        overOneCode: best.overOneCode,
+        directMax: +direct.max.toPrecision(4),
+        flippedMax: +flipped.max.toPrecision(4),
+        missingFields: R.agreement_missing || [],
+      };
+      note('pixel agreement (WebGL2 vs wgpu, same WGSL)',
+           `max ${R.agreement.max}  mean ${R.agreement.mean}  ` +
+           `over 1/255: ${best.overOneCode}/${best.samples}  [${R.agreement.orientation}]`);
+    }
+  } catch (e) {
+    R.agreement = { error: String(e) };
+    note('pixel agreement', 'ERROR ' + e);
+  }
+
+  const glErr = gl.getError();
+  R.caps.finalGlError = glErr === gl.NO_ERROR ? 'none' : '0x' + glErr.toString(16);
+  note('gl error at end', R.caps.finalGlError);
+  R.ok = true;
+} catch (e) {
+  R.ok = false;
+  R.errors.push(String(e && e.stack || e));
+  log('FAILED: ' + e);
+}
+finish();
+</script>

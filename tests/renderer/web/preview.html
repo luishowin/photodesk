@@ -1,0 +1,201 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Spike C — preview harness</title>
+<style>
+  :root { --canvas:#333; --surface:#1E1E1E; --raised:#252525; --border:#3A3A3A;
+          --text:#F2F2F2; --dim:#8C8C8C; }
+  body { margin:0; background:var(--canvas); color:var(--text);
+         font:13px "Adwaita Sans", Inter, system-ui, sans-serif; display:flex; height:100vh }
+  #stage { flex:1; display:grid; place-items:center; overflow:hidden }
+  canvas { max-width:100%; max-height:100%; box-shadow:0 2px 24px #0006 }
+  aside { width:300px; background:var(--surface); border-left:1px solid var(--border);
+          padding:16px; overflow-y:auto }
+  h1 { font-size:13px; font-weight:600; margin:0 0 4px }
+  p.sub { color:var(--dim); margin:0 0 16px; font-size:12px; line-height:1.5 }
+  label { display:block; margin:14px 0 0 }
+  .row { display:flex; justify-content:space-between; align-items:baseline }
+  .row span:last-child { font:12px "JetBrains Mono", ui-monospace, monospace;
+                         font-variant-numeric:tabular-nums; color:var(--dim) }
+  input[type=range] { width:100%; margin:4px 0 0; accent-color:var(--text) }
+  #stats { margin-top:20px; padding:10px; background:var(--raised);
+           border:1px solid var(--border); border-radius:4px;
+           font:12px "JetBrains Mono", ui-monospace, monospace; line-height:1.7;
+           font-variant-numeric:tabular-nums; white-space:pre }
+  .warn { color:#E71D36 }
+</style>
+<div id="stage"><canvas id="c"></canvas></div>
+<aside>
+  <h1>Spike C — preview harness</h1>
+  <p class="sub">§5 stages 2–9, fused into one pass, authored in WGSL and transpiled to
+  GLSL&nbsp;ES&nbsp;3.00 by naga. The shader running below is the generated file, not a
+  hand-written twin — a twin would make §0's one-shader-source invariant untestable.</p>
+  <div id="controls"></div>
+  <div id="stats">starting…</div>
+</aside>
+<script type="module">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias:false });
+const stats = document.getElementById('stats');
+if (!gl) { stats.innerHTML = '<span class="warn">no WebGL2 context</span>'; throw new Error('no webgl2'); }
+if (!gl.getExtension('EXT_color_buffer_float')) {
+  stats.innerHTML = '<span class="warn">EXT_color_buffer_float missing — RGBA16F is not colour-renderable here</span>';
+  throw new Error('no float colour buffer');
+}
+
+const W = 1920, H = 1080;                                  // §7.1 proxy, ~2 MP
+canvas.width = W; canvas.height = H;
+
+const [vsSrc, fsSrc] = await Promise.all([
+  fetch('generated/adjust.vert').then(r => r.text()),
+  fetch('generated/adjust.frag').then(r => r.text()),
+]);
+const sh = (t, src, label) => {
+  const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(label + ': ' + gl.getShaderInfoLog(s));
+  return s;
+};
+const prog = gl.createProgram();
+gl.attachShader(prog, sh(gl.VERTEX_SHADER, vsSrc, 'vert'));
+gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fsSrc, 'frag'));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+gl.bindVertexArray(gl.createVertexArray());
+
+const names = [];
+for (let i = 0; i < gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS); i++)
+  names.push(gl.getActiveUniform(prog, i).name);
+const blockSize = gl.getActiveUniformBlockParameter(prog, 0, gl.UNIFORM_BLOCK_DATA_SIZE);
+gl.uniformBlockBinding(prog, 0, 0);
+const uboData = new ArrayBuffer(blockSize);
+const f32 = new Float32Array(uboData), u32 = new Uint32Array(uboData);
+const ubo = gl.createBuffer();
+gl.bindBuffer(gl.UNIFORM_BUFFER, ubo);
+gl.bufferData(gl.UNIFORM_BUFFER, uboData, gl.DYNAMIC_DRAW);
+gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, ubo);
+const offsetOf = (field) => {
+  const full = names.find(n => n.endsWith('.' + field) || n === field);
+  if (!full) return undefined;
+  return gl.getActiveUniforms(prog, gl.getUniformIndices(prog, [full]), gl.UNIFORM_OFFSET)[0];
+};
+
+const mkTex = (w, h, data = null) => {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.FLOAT, data);
+  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
+                        [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]])
+    gl.texParameteri(gl.TEXTURE_2D, k, v);
+  return t;
+};
+
+// A synthetic 2 MP source with enough structure that the adjustments are legible.
+const src = new Float32Array(W * H * 4);
+for (let y = 0, i = 0; y < H; y++) for (let x = 0; x < W; x++, i += 4) {
+  const u = x / W, v = y / H;
+  const ring = Math.hypot(u - 0.5, v - 0.5);
+  const d = Math.sin(u * 60) * Math.cos(v * 44) * 0.05 + Math.sin(ring * 50) * 0.04;
+  src[i]   = Math.max(0, Math.min(1, 0.15 + u * 0.75 + d));
+  src[i+1] = Math.max(0, Math.min(1, 0.12 + v * 0.7  + d * 0.8));
+  src[i+2] = Math.max(0, Math.min(1, 0.20 + (1 - ring) * 0.6 + d));
+  src[i+3] = 1;
+}
+const srcTex = mkTex(W, H, src);
+const targets = [0, 1].map(() => {
+  const tex = mkTex(W, H), fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  return { tex, fbo };
+});
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+const texUniform = names.find(n => n.includes('src_texture'));
+if (texUniform) gl.uniform1i(gl.getUniformLocation(prog, texUniform), 0);
+
+// §11 specifies these controls down to the gesture; here they only need to move.
+const CONTROLS = [
+  ['exposure',   -3,   3,   0,   0.01, 'EV'],
+  ['contrast',  -100, 100,  0,   1,    ''],
+  ['highlights',-100, 100,  0,   1,    ''],
+  ['shadows',   -100, 100,  0,   1,    ''],
+  ['blacks',    -100, 100,  0,   1,    ''],
+  ['temperature',-100,100,  0,   1,    'K'],
+  ['tint',      -100, 100,  0,   1,    ''],
+  ['vibrance',  -100, 100,  0,   1,    ''],
+  ['saturation',-100, 100,  0,   1,    ''],
+];
+const offs = {};
+const host = document.getElementById('controls');
+let layers = 1;
+for (const [name, lo, hi, def, step, unit] of CONTROLS) {
+  offs[name] = offsetOf(name);
+  const label = document.createElement('label');
+  label.innerHTML = `<span class="row"><span>${name}</span><span id="v_${name}">${def}${unit}</span></span>`;
+  const r = document.createElement('input');
+  Object.assign(r, { type:'range', min:lo, max:hi, step, value:def });
+  r.addEventListener('input', () => {
+    if (offs[name] !== undefined) f32[offs[name] / 4] = +r.value;
+    document.getElementById('v_' + name).textContent =
+      (+r.value).toFixed(step < 1 ? 2 : 0) + unit;
+    dirty = true;
+  });
+  // Double-click resets, per §11.
+  r.addEventListener('dblclick', () => { r.value = def; r.dispatchEvent(new Event('input')); });
+  label.appendChild(r);
+  host.appendChild(label);
+}
+const layerLabel = document.createElement('label');
+layerLabel.innerHTML = '<span class="row"><span>layers (§7.3 bounds at 6)</span><span id="v_layers">1</span></span>';
+const lr = document.createElement('input');
+Object.assign(lr, { type:'range', min:1, max:8, step:1, value:1 });
+lr.addEventListener('input', () => {
+  layers = +lr.value; document.getElementById('v_layers').textContent = layers; dirty = true;
+});
+layerLabel.appendChild(lr); host.appendChild(layerLabel);
+
+const curveOff = offsetOf('curve_counts');
+if (curveOff !== undefined) u32[curveOff / 4] = 0;      // curves off; §14 defers them to v0.3
+
+let dirty = true, frames = 0, acc = 0, last = performance.now();
+function frame() {
+  if (dirty) {
+    const t0 = performance.now();
+    gl.bindBuffer(gl.UNIFORM_BUFFER, ubo);
+    gl.bufferSubData(gl.UNIFORM_BUFFER, 0, uboData);
+    let input = srcTex;
+    for (let i = 0; i < layers; i++) {
+      const dst = targets[i % 2];
+      gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+      gl.viewport(0, 0, W, H);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, input);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      input = dst.tex;
+    }
+    // Final pass to the default framebuffer so what is on screen is the stack output.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, W, H);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, input);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.finish();
+    acc += performance.now() - t0; frames++;
+    dirty = false;
+  }
+  const now = performance.now();
+  if (now - last > 400 && frames) {
+    const ms = acc / frames;
+    stats.innerHTML =
+      `proxy      ${W}x${H} (${(W*H/1e6).toFixed(2)} MP)\n` +
+      `layers     ${layers}\n` +
+      `passes     ${layers + 1}\n` +
+      `frame      ${ms.toFixed(2)} ms\n` +
+      `budget     16.00 ms  ` +
+      (ms <= 16 ? '<span style="color:#8C8C8C">within</span>'
+                : '<span class="warn">OVER</span>') +
+      `\nbuffer     RGBA16F, linear\nshader     naga GLSL ES 3.00`;
+    acc = 0; frames = 0; last = now;
+  }
+  requestAnimationFrame(frame);
+}
+// Keep it drawing so the readout stays live even when nothing is being dragged.
+setInterval(() => { dirty = true; }, 16);
+requestAnimationFrame(frame);
+</script>

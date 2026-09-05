@@ -20,3 +20,7 @@ dist/
 .idea/
 *.swp
 .DS_Store
+
+# Spike C generated artefacts — emitted by `cargo test -p photodesk-renderer-spike`,
+# regenerable by definition, and two of them are 1 MB float dumps
+/tests/renderer/web/generated/

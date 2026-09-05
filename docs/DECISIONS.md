@@ -137,3 +137,66 @@ Both were green-looking measurements of nothing, and both would have put a false
 ### Still open
 
 **Spike C, and it now carries a warning §2.3 already wrote.** Nothing in Spike B touched a GPU; these are CPU models of the transforms. Spike C's `EXT_color_buffer_float` clause is what establishes RGBA16F as a colour-renderable target with linear filtering on this machine, and §2.3 says plainly that B and C can each be green and jointly wrong if that goes unchecked. **It is unchecked.** Freezing the working space on Spike B's evidence does not retire that risk; it concentrates it.
+
+---
+
+## 2026-09-05 — Spike C green; Phase 0 complete; spec v0.6 → v0.7
+
+**All three spikes have run.** Two of the three answers were not the expected ones. Harness at `tests/renderer/`, six Rust tests plus a WebKitGTK probe. Deliverable: `SPIKE-C.md`.
+
+### Resolved
+
+**`Preview renderer path` → FROZEN: WebGL2 in the webview, WGSL authored fragment-first, transpiled to GLSL ES 3.00 by `naga` at build time, wgpu natively for export.**
+
+This is §7.2's *original* candidate, not its fallback — the outcome the v0.5 entry called a hypothesis and told the spike to test rather than assume. Four things had to hold and all four do: a realistic fused pass lowers to 9,292 bytes of ES 3.00; WebKitGTK compiles and links it with no GL error; `EXT_color_buffer_float` is present with RGBA16F complete as a colour attachment and linear filtering measured at the midpoint; and six layers at 2 MP cost **5.92 ms median, 6.08 ms p95** against §7.3's 16 ms — about 1 ms per layer, scaling linearly, leaving ~10 ms for the spatial stages that pass does not yet include.
+
+**`Shaders are authored fragment-first` → FROZEN.** `@fragment`, `var<uniform>`, sampled textures, `@location(0)` returns. This is now an invariant rather than a style: the negative control fed naga a compute shader of exactly RapidRAW's shape and it refused, naming `BUFFER_STORAGE | COMPUTE_SHADER | IMAGE_LOAD_STORE` — the three constructs §2.3 identified as having no GLSL ES 3.0 target, returned by the tool instead of reasoned about. One compute shader anywhere breaks the preview path for the whole project.
+
+### Measured — §0's invariant, for the first time
+
+"One shader source, preview and export" has been frozen since v0.1 of this spec on an argument. It now has a number.
+
+`tests/renderer/tests/agreement.rs` renders the **same WGSL** through wgpu natively (Vulkan, RADV RENOIR, headless) and the probe renders the transpiled GLSL over the same source with the same parameters:
+
+```
+196,608 channel samples      max |diff| 0.008789      mean 0.0001944
+over 1/255: 3 samples        orientation: direct (flipped scores 1.122)
+```
+
+Both sides store RGBA16F so the comparison is about maths rather than precision; both sample NEAREST so filtering cannot be mistaken for arithmetic. **The parameter block is not shared as bytes** — the native side writes a `#[repr(C)]` struct, the browser places named fields at std140 offsets it queries from the linked program — so agreement is evidence the two layouts match rather than evidence they read one buffer. The flipped score of 1.122 is the control that the metric is sensitive to a one-row misalignment at all.
+
+§12.2 inherits this comparison.
+
+**§2.3's uniform-buffer argument also holds with room to spare:** the per-layer block is **784 bytes** against a queried 65,536 and a GLES3-guaranteed 16,384. §5's per-layer loop is indeed what makes a UBO sufficient where RapidRAW's 32-slot array needed a storage buffer.
+
+### Risk retired
+
+The v0.6 entry closed by saying that freezing f16 on Spike B's CPU-only evidence *concentrated* a risk rather than retiring it, because §2.3's `EXT_color_buffer_float` clause was unchecked and B and C could each be green and jointly wrong. It was checked first, and it holds. **Spike B's freeze is safe.**
+
+The filtering half of that clause is measured rather than inferred, and the distinction mattered: `OES_texture_half_float_linear` reports `false` in WebGL2 because RGBA16F filtering is core there, so reading the extension string would have produced a false failure. Sampling a 2×1 texture of 0 and 1 exactly between the texels returns 0.5.
+
+### Two corrections during the spike
+
+Both produced confident numbers that measured something other than what they claimed, which is now three spikes in a row where that has happened and is worth naming as a pattern rather than an accident.
+
+**A stray debug line raised `GL_INVALID_VALUE` on every run** — `getUniformIndices` for a non-existent uniform returns `INVALID_INDEX`, and `getActiveUniform` on that raises `0x501`. The first probe reported "within budget" at every layer count with an error outstanding, which could equally have meant draws were being dropped.
+
+**The first agreement run reported max 1.13 with 196,027 of 196,608 samples out of tolerance** — an apparently catastrophic disagreement that was entirely an input mismatch. naga names a block member three ways depending on type (`.exposure`, `.luma_curve[0]`, `.grade_shadows.offset`) and the lookup matched only the first, so the curves, the HSL bands and all four grading wheels resolved to nothing and the browser rendered zeros where the reference had values. A missing field is now a hard failure that refuses to produce a number, which is the real fix: the original failure mode was not a wrong answer, it was a wrong answer that looked like a finding.
+
+### Re-pointed, and this time out of the spikes
+
+**`Front-end framework` stays PROVISIONAL; its exit moves from Spike C to the author, before v0.1 scaffolding.**
+
+Spike C was given this because it is the first thing that puts pixels in a webview. It has an answer, and the answer is that the renderer does not care: the canvas path is a WebGL2 context, a uniform buffer, three draw calls and a `requestAnimationFrame` loop, touching no framework API. `web/preview.html` runs the full stack at 2 MP as plain ES modules with no build step at all.
+
+So the constraint the spike was meant to discover does not exist. What remains is §10/§11 UI ergonomics, which is not a thing a spike decides — and this is the second time this item has had its exit re-pointed, which is itself the signal that it was never a technical question.
+
+### Phase 0
+
+Estimated at 3 weeks. Actual: one day. That is not a claim that the estimate was wrong — the spikes were sequenced so each one's answer narrowed the next, and Spike A's failure removed a fork integration that was the bulk of the estimated work. What the three weeks bought was the *option* to spend them; what they cost was a day, because the answers turned out to be cheap to obtain and expensive only to guess.
+
+Two of the three answers were not the expected ones. A was expected to pass and failed. C was expected to fall back to hand-written GLSL and did not. Only B came out where the spec predicted, and it is the one the spec was least sure about.
+
+### Still open before v0.1
+
+Four items, none of them a spike: the front-end framework; the export gamut-mapping policy §4 never named; ICC extraction from real containers, now unblocked since `libheif-devel` is installed; and confirmation that webkit2gtk-4.1 — Tauri's binding, as opposed to the webkitgtk-6.0 this probe ran in — behaves identically. Same engine, same WebKit 2.52.5, shared WebGL implementation, but unconfirmed.

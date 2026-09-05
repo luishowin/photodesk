@@ -1,9 +1,9 @@
 # PhotoDesk — Architecture Specification
 
-**Version:** 0.6
+**Version:** 0.7
 **Author:** Luis Howin
 **Platform:** Fedora Workstation / GNOME
-**Status:** Master spec for the coding agent.
+**Status:** Master spec for the coding agent. **Phase 0 complete.**
 
 ---
 
@@ -38,14 +38,15 @@ This table is the contract. Anything not listed is undecided and needs a decisio
 | **Do not fork RapidRAW** | **FROZEN** | Spike A's gate failed 2 of 4 criteria (§2.1, `FORK-AUDIT.md`). Stage order is the statement order inside one vendored compute kernel, so "pipeline order is explicit and versioned" is unimplementable in a fork. |
 | **Build against `rawler` + `libheif` + our own shaders** | **FROZEN** | The §2.1 fallback, now the path. RapidRAW has no colour management and cannot open HEIF — §4 and §1's native subject were both greenfield inside the fork too. |
 | **Working space = linear Display P3, f16** | **FROZEN** | Spike B measured it (§2.2, `SPIKE-B.md`): ΔE 0.0956 max at thirty passes, under a tenth of the ΔE 1.0 budget. §2.2's f32 fallback is not needed and should not be built. |
-| **Preview renderer path** | PROVISIONAL | → Spike C (§2.3). Naga transpilation is a live branch again: the compute chain that had no GLSL target was RapidRAW's, and we are not forking it. |
+| **Preview renderer path: WebGL2 + WGSL→GLSL via naga** | **FROZEN** | Spike C (§2.3, `SPIKE-C.md`). Lowers, compiles in WebKitGTK, 5.92 ms for six layers at 2 MP against a 16 ms budget, and agrees with the wgpu path to max 0.0088 across 196,608 samples. §7.2's candidate, not its fallback. |
+| **Shaders are authored fragment-first** | **FROZEN** | `@fragment`, `var<uniform>`, sampled textures, `@location(0)` returns. Compute, storage buffers and storage textures have no GLSL ES 3.0 target — naga refuses them by name — so using one anywhere breaks the preview path for every shader. |
 | **v1 pipeline stage ordering** | PROVISIONAL | → golden-image validation (§12.1) |
 | Document is stack-shaped on disk | PROVISIONAL | Until the stack becomes lossy for the graph (§6.2) |
 | Which AI providers ship | PROVISIONAL | Interface frozen, implementations swap freely |
 | **v1 discards iPhone HDR gain maps** | PROVISIONAL | → an HDR display, or the first wanted gain-mapped export (§4) |
 | **ICC extraction from real containers** | PROVISIONAL | → the two blocked §2.2 corpus items, once `libheif-devel` is installed. Synthetic patches prove the matrices; they cannot prove we read the tag that selects them. |
 | **Export gamut-mapping policy** | PROVISIONAL | → before v0.1 exports (§4). §4 never named one; the Spike B harness uses clip-in-linear, which is a choice currently made in a test rather than in the spec. |
-| **Front-end framework** | PROVISIONAL | → Spike C. Spike A's exit is spent without resolving it — there is no fork to inherit from — and §0 forbids a provisional item with no exit. Re-pointed at the spike that first puts pixels in the webview. |
+| **Front-end framework** | PROVISIONAL | → the author, before v0.1 scaffolding. Spike C measured the constraint away rather than resolving the choice: the canvas is a WebGL2 context, a UBO and three draw calls, identical under any framework or none (`SPIKE-C.md`). What remains is §10/§11 UI ergonomics, which is not a thing a spike decides. |
 
 ---
 
@@ -65,7 +66,7 @@ It is **not** a RAW laboratory. It doesn't reconstruct scene radiance, doesn't a
 
 Nothing in §4 onward is safe to build until these three questions are answered. Budget roughly **three weeks with no visible product**. That is not wasted time; it's the price of not discovering any of this in month four.
 
-**Spikes A and B are done.** A failed its gate, which was worth having in week one (`FORK-AUDIT.md`). B is green and the working space is frozen (`SPIKE-B.md`). §2.1 and §2.2 below are kept as written — the questions they asked were the right ones. **Spike C is the only one left, and its shape changed as a result of A** (§2.3).
+**Phase 0 is complete. All three spikes have run.** A failed its gate, which was worth having in week one (`FORK-AUDIT.md`). B is green and the working space is frozen (`SPIKE-B.md`). C is green and the preview path is frozen (`SPIKE-C.md`). §2.1–§2.3 below are kept as written — the questions they asked were the right ones, and two of the three answers were not the expected ones.
 
 ### 2.1 Spike A — RapidRAW fork audit — **COMPLETE, GATE FAILED**
 
@@ -136,7 +137,9 @@ Linear Display P3 f16 is the leading candidate (§4), not a decision. Prove it.
 
 **Exit:** harness green → freeze the working space. Harness red → the register entry changes and §4 is rewritten before anything depends on it.
 
-### 2.3 Spike C — preview renderer
+### 2.3 Spike C — preview renderer — **COMPLETE, GREEN**
+
+> **Result (2026-09-05):** the WGSL lowers to GLSL ES 3.00, WebKitGTK compiles it, `EXT_color_buffer_float` is present with RGBA16F colour-renderable and linear-filterable (measured, not inferred), six layers cost **5.92 ms at 2 MP** against a 16 ms budget, and the WebGL2 and wgpu paths agree to **max 0.0088** across 196,608 channel samples. **§7.2's candidate is frozen, not its fallback.** A compute shader of RapidRAW's shape is refused by naga naming `BUFFER_STORAGE | COMPUTE_SHADER | IMAGE_LOAD_STORE` — so the fragment result is a consequence of authoring fragment-first, not a coincidence. Full numbers in [`SPIKE-C.md`](SPIKE-C.md); harness in `tests/renderer/`.
 
 Establish whether the same WGSL can drive both paths on Fedora (§7.2). Success is a slider moving an image at proxy resolution inside the webview, at budget (§7.3), **and the working space actually representable** — RGBA16F as a colour-renderable target with linear filtering, which on WebGL2 means `EXT_color_buffer_float` on this machine's WebKitGTK. That second clause is not padding: without it Spike B can freeze f16 against a preview path that turns out unable to render to it, and the two spikes would each be individually green and jointly wrong.
 
@@ -341,6 +344,8 @@ Migrations are pure functions, one per version step, composed, each with a test 
 ---
 
 ## 7. Render architecture
+
+**§7.2 is settled** (Spike C, `SPIKE-C.md`): preview runs WebGL2 inside the webview from WGSL transpiled by `naga`, export runs the same WGSL natively through wgpu, and the two agree to max 0.0088 on a 196,608-sample comparison. Everything below stands as written; the provisional framing on §7.2 is gone.
 
 ### 7.1 Proxy editing
 
@@ -604,7 +609,14 @@ These are product surface, so they're specified, not left to the implementation.
 
 The regression suite is not optional infrastructure — for a non-destructive editor it *is* the correctness argument.
 
-### 12.0 Colour suite
+### 12.0 Standing suites
+
+Two permanent suites came out of Phase 0 (§13), neither of which is a spike artefact:
+
+- **`tests/color/`** — Spike B's harness. Eight tests, ~20 ms, no fixtures. Two of them cross-validate against lcms2 rather than the pipeline against the harness, because a colour suite that only agrees with itself is green and meaningless.
+- **`tests/renderer/`** — Spike C's harness. Six tests covering WGSL→GLSL lowering, the negative control that compute is refused, the UBO size bound, and a wgpu-rendered reference. The WebKitGTK half needs a browser and so runs on demand rather than in CI.
+
+#### The colour suite
 
 Spike B's harness (`tests/color/`) is a permanent suite per §13, not a spike artefact. Eight tests, ~20 ms, no fixtures — it runs on every commit. Two of its tests cross-validate the harness against lcms2 rather than the pipeline against the harness, because a colour suite that only agrees with itself is green and meaningless.
 
@@ -688,7 +700,7 @@ photodesk/
 
 | Version | Scope | Estimate |
 |---|---|---|
-| **0.0** | Spikes A, B, C. `FORK-AUDIT.md` ✅, colour harness green ✅, renderer path chosen. **No product.** | 3 weeks |
+| ~~**0.0**~~ | ~~Spikes A, B, C.~~ **Complete 2026-09-05.** `FORK-AUDIT.md` ✅ · `SPIKE-B.md` ✅ · `SPIKE-C.md` ✅ | 3 weeks est., 1 day actual |
 | **0.1** | Open iPhone HEIF → exposure, contrast, highlights, shadows, blacks, temperature → before/after → export → colour correct end to end. Document model, graph compile, source-preservation and golden tests running. | 3 weeks |
 | **0.2** | Crop, rotate, straighten. Presets, copy/paste edits. Undo/redo at gesture granularity. | 2 weeks |
 | **0.3** | Colour tab: curves, HSL, grading wheels, vibrance. | 3 weeks |
@@ -719,14 +731,14 @@ photodesk/
 |---|---|---|
 | ~~1~~ | ~~Fork or build from scratch~~ | **Closed 2026-09-05 — build. `FORK-AUDIT.md`** |
 | ~~2~~ | ~~Working space and precision~~ | **Closed 2026-09-05 — linear Display P3 f16. `SPIKE-B.md`** |
+| ~~3~~ | ~~Preview renderer path~~ | **Closed 2026-09-05 — WebGL2 + naga transpilation. `SPIKE-C.md`** |
 | 11 | Export gamut-mapping policy | Before v0.1 exports (§4) |
 | 12 | ICC extraction from real containers | The two blocked §2.2 corpus items, once `libheif-devel` is installed |
-| 3 | Preview renderer path | Spike C |
 | 4 | Pipeline v1 ordering | Golden-image validation |
 | 5 | Pre-1.0 vs post-1.0 reorder policy | Before v0.2 (§5) |
 | 6 | Remote AI endpoint: self-hosted ComfyUI or gateway | Before v0.5 |
 | 7 | Icon — `PD` monogram or geometric mark, monochrome, no aperture | Whenever; the 16×16 render is the only test |
-| 8 | Front-end framework | Spike C — Spike A's exit is spent and there is no fork to inherit from |
+| 8 | Front-end framework | The author, before v0.1 scaffolding — Spike C measured the constraint away rather than choosing |
 | 9 | HDR gain map handling beyond v1's discard | An HDR display, or the first wanted gain-mapped export (§4) |
 | 10 | Layer count at which frame rate is allowed to fall | Measured against the §7.3 bound of 6 |
 
