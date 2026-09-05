@@ -91,3 +91,49 @@ Also recorded, and cheaper but not free: 35,601 lines of Rust with **zero** `#[t
 ### Estimate
 
 Phase 0 moves from 2 weeks to **3 weeks**, adopting the number the 2026-09-05 review called the honest one. Spike A took a day rather than the week implied, but it was a static audit that no longer has to be followed by a fork integration — and the two remaining spikes both grew work: Spike B now proves a colour architecture with no incumbent behind it, and Spike C now has an extra branch to test before it can fall back.
+
+---
+
+## 2026-09-05 — Spike B green; spec v0.5 → v0.6
+
+**The first code in the repository, and the first item frozen by measurement rather than by argument.** Harness at `tests/color/`, eight tests, all green. Deliverable: `SPIKE-B.md`.
+
+### Resolved
+
+**`Working space = linear Display P3 f16` → FROZEN.**
+
+At thirty render passes — six layers' worth, the deepest chain §7.3 permits — f16 storage diverges from the identical chain in f64 by **ΔE2000 0.0956 max, 0.0323 mean**. §2.2's tightest threshold and §12.1's golden-image budget are both ΔE 1.0, so f16 spends under a tenth of the correctness budget at the worst depth available to it.
+
+The four §2.2 tests: round-trip identity max 0.0000 against a 1.0 threshold (n=153); P3 → sRGB against an independent reference mean 0.0807 against 1.5 (n=126); untagged-assumed-sRGB max 0.0000 against 1.0; deep-shadow ramp bit-exact, 17 of 17 distinct output codes against a required 14, all second differences zero against a permitted 1.
+
+**§2.2's f32 fallback is not needed and should not be built.** The reason generalises and is worth keeping: code 1/255 decodes to linear 3.03 × 10⁻⁴, where an f16 ulp is about 2.4 × 10⁻⁷ — roughly 1,270 representable values between adjacent 8-bit codes at the very bottom. Linear encoding does spend precision in the highlights as §2.2 warned, but half float's significand is *relative* and 8-bit source material never approaches exhausting it.
+
+Error accumulates as a √n random walk, not a ratchet: ColorChecker rises 4.2× over thirty passes against √30 ≈ 5.5, and the shadow ramp is *lower* at thirty passes than at five because the alternating gain walks small values back onto exact f16 grid points.
+
+### Newly provisional
+
+Two items that did not exist and needed to, rather than being left as unnamed gaps.
+
+**`ICC extraction from real containers`** (exit: the two blocked §2.2 corpus items, once `libheif-devel` is installed). Two of six corpus items — an iPhone HEIF with an embedded P3 profile, and an iPhone HEIC with an ISO gain map — need a dev package that is absent. Neither blocks the working space: synthetic corpora with exact known values are the right instrument for asking whether linear P3 at f16 holds up numerically, and that is what they answered. What the HEIF items test is whether we correctly read the tag that *selects* a transform, which is a different question and now has its own entry.
+
+**`Export gamut-mapping policy`** (exit: before v0.1 exports). §4 said "linear P3 → tone encode → sRGB" and stopped. A P3 source exported to sRGB produces negative channels for everything outside the smaller gamut, and §2.2's test 2 cannot be written without deciding what happens to them. The harness uses clip-per-channel in linear light and agrees with lcms2 at relative colorimetric to mean ΔE 0.0807 — defensible, but a choice currently made in a test file rather than in the specification.
+
+### Measured, not decided
+
+**Profile misinterpretation is a quiet failure, not a loud one.** Test 3 carries a counterexample, because "assume sRGB" passing at ΔE 0.0000 says nothing unless getting it wrong is detectable. On saturated content, misreading sRGB as Display P3 costs max ΔE 4.52 — detectable. On the flat, largely desaturated content a **screenshot** actually contains, it costs max 2.96 and mean 0.50. So the failure is smallest on exactly the material most likely to arrive untagged. It is not something anyone notices by looking; it is found by a test or not at all. Spike A established that RapidRAW does this to every P3 file it opens.
+
+### Two corrections during the spike
+
+Both were green-looking measurements of nothing, and both would have put a false sentence in this file.
+
+**The pass sweep measured no-ops.** The first version ran `passes` *identity* stages and reported a flat line at 1, 5 and 30 passes. Arithmetically correct and entirely uninformative: `f16 → f32 → f16` is idempotent, so an identity pass is a no-op and thirty of them are thirty no-ops. It would have supported "f16 survives a thirty-pass chain" on no evidence at all. Fixed by giving each pass real per-pixel work of the shape §5 stages 2–9 have and measuring divergence from the same workload in f64. The control remains in the suite: it prints the flat line and says why it is flat.
+
+**The headroom table measured after 8-bit quantisation**, so every cell read 0.0000 for both f16 and f32 — the quantiser destroys exactly the quantity being reported. Fixed by measuring in the encoded float domain. The four §2.2 tests still measure at 8 bits, because their thresholds are stated on the delivered image.
+
+### Spec changes
+
+§4 loses its "provisional, pending Spike B" heading and gains the frozen working space plus an explicit note that the gamut policy is *not* frozen. §12 gains §12.0, recording the colour suite as permanent per §13 rather than as a spike artefact — eight tests, ~20 ms, no fixtures, so it belongs on every commit. §16 closes decision 2 and opens 11 and 12.
+
+### Still open
+
+**Spike C, and it now carries a warning §2.3 already wrote.** Nothing in Spike B touched a GPU; these are CPU models of the transforms. Spike C's `EXT_color_buffer_float` clause is what establishes RGBA16F as a colour-renderable target with linear filtering on this machine, and §2.3 says plainly that B and C can each be green and jointly wrong if that goes unchecked. **It is unchecked.** Freezing the working space on Spike B's evidence does not retire that risk; it concentrates it.

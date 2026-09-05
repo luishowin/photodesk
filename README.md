@@ -16,13 +16,15 @@ There is no application yet, and that is on purpose. The architecture spec commi
 
 | Phase | State |
 |---|---|
-| Spec | v0.5 — [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Spec | v0.6 — [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Spike A — RapidRAW fork audit | **complete — gate failed, no fork.** [`docs/FORK-AUDIT.md`](docs/FORK-AUDIT.md) |
-| Spike B — colour validation harness | not started — **unblocked, and now the critical path** |
-| Spike C — preview renderer | not started |
-| v0.1 | blocked on B and C |
+| Spike B — colour validation harness | **complete — green, working space frozen.** [`docs/SPIKE-B.md`](docs/SPIKE-B.md) |
+| Spike C — preview renderer | not started — **the only one left** |
+| v0.1 | blocked on C |
 
 **Spike A failed its gate on 2026-09-05, which is the outcome it was run to find.** RapidRAW's per-pixel chain is one compute kernel in which stage order is the literal statement order, and vendored shaders are read-only — so "pipeline order is explicit and versioned", a frozen item, could not be implemented inside the fork. Three further findings said the fork would not have supplied much of what it was wanted for: RapidRAW has **no colour management at all**, **cannot open HEIF**, and on Linux ships every preview frame as a lossy JPEG over IPC. PhotoDesk builds against `rawler` + `libheif` + its own shaders instead.
+
+**Spike B is green.** At thirty render passes — the deepest chain the performance budget permits — f16 storage costs ΔE2000 **0.0956** against a budget of 1.0, and the deep-shadow ramp comes back bit-exact. The working space is frozen as **linear Display P3, f16**, and the f32 fallback will not be built. Harness at [`tests/color/`](tests/color) — eight tests, two of which validate the harness against lcms2 rather than the pipeline against the harness, because a colour suite that only agrees with itself is green and meaningless.
 
 See [`docs/DECISIONS.md`](docs/DECISIONS.md) for what has been decided and why, and [`docs/REVIEW-2026-09-05.md`](docs/REVIEW-2026-09-05.md) for what is still open.
 
@@ -49,29 +51,32 @@ Two rules follow, and the project is held to both. **Every frozen item carries a
 
 | Item | Resolved by |
 |---|---|
-| Working space — linear Display P3, f16 | Spike B |
 | Preview renderer path | Spike C |
+| Export gamut-mapping policy | Before v0.1 exports — §4 never named one |
+| ICC extraction from real containers | The two blocked corpus items, once `libheif-devel` is installed |
 | v1 pipeline stage ordering | Golden-image validation |
 | Front-end framework | Spike C — Spike A's exit is spent, and there is no fork to inherit one from |
 | v1 discards iPhone HDR gain maps | An HDR display, or the first wanted gain-mapped export |
 
-Two items left the table on 2026-09-05 and are now frozen: **do not fork RapidRAW**, and **build against `rawler` + `libheif` + our own shaders**.
+Three items left the table on 2026-09-05 and are now frozen: **do not fork RapidRAW**, **build against `rawler` + `libheif` + our own shaders**, and **the working space is linear Display P3 at f16**.
 
 ## Phase 0
 
 **Spike A — fork audit. ✅ Done, gate failed.** Every subsystem classified `KEEP` / `ADAPT` / `REPLACE` / `AVOID`, four gate criteria scored, two failed. Evidence, the subsystem table and the register consequences are in [`docs/FORK-AUDIT.md`](docs/FORK-AUDIT.md).
 
-**Spike B — colour validation harness.** Prove linear Display P3 f16 rather than assuming it, on a corpus with known values and ΔE2000 thresholds. Kept afterwards as a permanent test suite. It was always buildable independently of Spike A; it is now also the thing most worth building, because the fork base turned out to have no colour management of any kind and §4 is greenfield rather than an adaptation.
+**Spike B — colour validation harness. ✅ Done, green.** Four tests at the thresholds §2.2 states, plus two cross-validations against lcms2. f16 costs under a tenth of the ΔE 1.0 budget at the deepest chain permitted, so the working space is frozen. Numbers in [`docs/SPIKE-B.md`](docs/SPIKE-B.md). Kept as a permanent suite — it runs in ~20 ms with no fixtures.
 
 **Spike C — preview renderer.** Establish whether one shader source can drive both preview and export on this platform. Spike A reopened this: the compute chain that had no GLSL ES 3.0 target to lower onto was RapidRAW's, and we are not forking it. Writing our own shaders fragment-first avoids the constructs GLSL lacks, so `naga` transpilation is a live branch again — one the spike now has to test rather than assume, in either direction.
 
 ## Picking up
 
-The next action is **Spike B**, the colour validation harness. It is now the critical path rather than the parallel track: Spike A established that there is no incumbent colour architecture to adapt, so §4 gets built from nothing and the harness is what decides whether it is built on f16.
+The next action is **Spike C**, the preview renderer — the last one, and now the only thing between here and v0.1.
 
-It needs `libheif-devel`, which is **not installed** — `sudo dnf install libheif-devel` is the first command. `lcms2-devel` is present. Nothing else in Spike B needs a webview, Node, or Tauri.
+It carries a warning §2.3 already wrote and Spike B has made sharper: **nothing in Spike B touched a GPU.** The harness is a CPU model of the transforms. Spike C's `EXT_color_buffer_float` clause is what establishes that RGBA16F is actually a colour-renderable target with linear filtering on this machine's WebKitGTK — and §2.3 says plainly that B and C can each be green and jointly wrong if that goes unchecked. Freezing the working space on Spike B's evidence did not retire that risk, it concentrated it. Check it first.
 
-**Local environment, as of 2026-09-05.** Present: Rust 1.98, `lcms2-devel`, `libheif` runtime, `gh` 2.97. Absent and needed: `libheif-devel` (Spike B, immediately), Node and npm (Spike C's WebGL2 harness and any front end), and `webkit2gtk4.1-devel` / `gtk3-devel` / `librsvg2-devel` / `openssl-devel` (Tauri itself). The GPU is an AMD Cezanne Vega iGPU, which makes ROCm doubtful for §9.1's `LocalGpu` — Vulkan compute is the realistic path.
+Two things to install before starting: **Node and npm** (the WebGL2 harness), and `libheif-devel` when convenient — it unblocks the two §2.2 corpus items that are still outstanding and the whole of v0.1's input path.
+
+**Local environment, as of 2026-09-05.** Present: Rust 1.98, `lcms2-devel` (2.16), `libheif` runtime, `gh` 2.97. Absent and needed: Node and npm (Spike C, immediately), `libheif-devel` (the blocked corpus items, then v0.1), and `webkit2gtk4.1-devel` / `gtk3-devel` / `librsvg2-devel` / `openssl-devel` (Tauri itself). The GPU is an AMD Cezanne Vega iGPU, which makes ROCm doubtful for §9.1's `LocalGpu` — Vulkan compute is the realistic path.
 
 **The repository is no longer specification-only.** That constraint existed because the fork decision was live and this repository is public. The decision is closed, nothing is vendored, and the code that follows is original.
 
@@ -79,7 +84,7 @@ It needs `libheif-devel`, which is **not installed** — `sudo dnf install libhe
 
 | Version | Scope | Estimate |
 |---|---|---|
-| 0.0 | The three spikes. **No product.** | 3 weeks — A done |
+| 0.0 | The three spikes. **No product.** | 3 weeks — A and B done |
 | 0.1 | Open a HEIF → exposure, contrast, highlights, shadows, blacks, temperature → before/after → export, colour-correct end to end. Document model, graph compile, source-preservation and golden tests running | 3 weeks |
 | 0.2 | Crop, rotate, straighten. Presets, copy/paste edits. Undo/redo at gesture granularity | 2 weeks |
 | 0.3 | Colour: curves, HSL, grading wheels, vibrance | 3 weeks |
@@ -94,6 +99,6 @@ v0.1 deliberately excludes curves and HSL. They're the fun part, which is exactl
 
 ## Licensing
 
-Everything currently in this repository is original writing and carries no third-party licence obligations.
+Everything in this repository is original. The colour harness at `tests/color/` links `lcms2` (MIT) as a dev-dependency for cross-validation only; nothing in the shipping path depends on it.
 
 RapidRAW is **AGPL-3.0**. The licensing review was sequenced to gate Spike A's conclusion, because the fork decision commits months of work and this repository is public. **The engineering gate failed first, so no code derived from RapidRAW exists or will** — nothing is vendored, adapted or redistributed. `docs/FORK-AUDIT.md` quotes identifiers and line numbers for the purpose of the audit and copies no source. "Architectural reference" means reading their code and then writing ours, which is a distinct question and worth raising if a review still happens. Nothing here is legal advice.

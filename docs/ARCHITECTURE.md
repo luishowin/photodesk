@@ -1,6 +1,6 @@
 # PhotoDesk — Architecture Specification
 
-**Version:** 0.5 (pre-code)
+**Version:** 0.6
 **Author:** Luis Howin
 **Platform:** Fedora Workstation / GNOME
 **Status:** Master spec for the coding agent.
@@ -37,12 +37,14 @@ This table is the contract. Anything not listed is undecided and needs a decisio
 | Providers run on a worker pool; `health()` is cached | **FROZEN** | §11 forbids blocking the canvas, and the trait signatures are synchronous. |
 | **Do not fork RapidRAW** | **FROZEN** | Spike A's gate failed 2 of 4 criteria (§2.1, `FORK-AUDIT.md`). Stage order is the statement order inside one vendored compute kernel, so "pipeline order is explicit and versioned" is unimplementable in a fork. |
 | **Build against `rawler` + `libheif` + our own shaders** | **FROZEN** | The §2.1 fallback, now the path. RapidRAW has no colour management and cannot open HEIF — §4 and §1's native subject were both greenfield inside the fork too. |
-| **Working space = linear Display P3 f16** | PROVISIONAL | → Spike B (§2.2) |
+| **Working space = linear Display P3, f16** | **FROZEN** | Spike B measured it (§2.2, `SPIKE-B.md`): ΔE 0.0956 max at thirty passes, under a tenth of the ΔE 1.0 budget. §2.2's f32 fallback is not needed and should not be built. |
 | **Preview renderer path** | PROVISIONAL | → Spike C (§2.3). Naga transpilation is a live branch again: the compute chain that had no GLSL target was RapidRAW's, and we are not forking it. |
 | **v1 pipeline stage ordering** | PROVISIONAL | → golden-image validation (§12.1) |
 | Document is stack-shaped on disk | PROVISIONAL | Until the stack becomes lossy for the graph (§6.2) |
 | Which AI providers ship | PROVISIONAL | Interface frozen, implementations swap freely |
 | **v1 discards iPhone HDR gain maps** | PROVISIONAL | → an HDR display, or the first wanted gain-mapped export (§4) |
+| **ICC extraction from real containers** | PROVISIONAL | → the two blocked §2.2 corpus items, once `libheif-devel` is installed. Synthetic patches prove the matrices; they cannot prove we read the tag that selects them. |
+| **Export gamut-mapping policy** | PROVISIONAL | → before v0.1 exports (§4). §4 never named one; the Spike B harness uses clip-in-linear, which is a choice currently made in a test rather than in the spec. |
 | **Front-end framework** | PROVISIONAL | → Spike C. Spike A's exit is spent without resolving it — there is no fork to inherit from — and §0 forbids a provisional item with no exit. Re-pointed at the spike that first puts pixels in the webview. |
 
 ---
@@ -63,7 +65,7 @@ It is **not** a RAW laboratory. It doesn't reconstruct scene radiance, doesn't a
 
 Nothing in §4 onward is safe to build until these three questions are answered. Budget roughly **three weeks with no visible product**. That is not wasted time; it's the price of not discovering any of this in month four.
 
-**Spike A is done. It failed its gate, and the failure was worth having in week one.** §2.1 below is kept as written — the questions it asked were the right ones and the answers are in `FORK-AUDIT.md`. Spikes B and C are open, and Spike C's shape changed as a result (§2.3).
+**Spikes A and B are done.** A failed its gate, which was worth having in week one (`FORK-AUDIT.md`). B is green and the working space is frozen (`SPIKE-B.md`). §2.1 and §2.2 below are kept as written — the questions they asked were the right ones. **Spike C is the only one left, and its shape changed as a result of A** (§2.3).
 
 ### 2.1 Spike A — RapidRAW fork audit — **COMPLETE, GATE FAILED**
 
@@ -111,7 +113,9 @@ For each, record: lines of code, dependency fan-out, whether it can be called wi
 
 **Deliverable:** `docs/FORK-AUDIT.md` with the table filled in and the gate explicitly passed or failed.
 
-### 2.2 Spike B — colour validation harness
+### 2.2 Spike B — colour validation harness — **COMPLETE, GREEN**
+
+> **Result (2026-09-05):** all four tests pass, plus two cross-validations against lcms2. f16 storage costs **ΔE 0.0956 max at thirty passes** — under a tenth of the ΔE 1.0 budget — so the working space is frozen and the f32 fallback is not needed. The deep-shadow ramp is bit-exact. **Two of six corpus items are blocked on `libheif-devel`**; both test ICC extraction from a container rather than the working space, and now have their own register entry. Full numbers in [`SPIKE-B.md`](SPIKE-B.md); harness in `tests/color/`.
 
 Linear Display P3 f16 is the leading candidate (§4), not a decision. Prove it.
 
@@ -171,9 +175,11 @@ Opening a NEF gives the same tabs as opening a HEIF. That's the entire point.
 
 ---
 
-## 4. Colour architecture — *provisional, pending Spike B*
+## 4. Colour architecture
 
-**Candidate working space: linear Display P3, f16.**
+**Working space: linear Display P3, f16. FROZEN** by Spike B (§2.2, `SPIKE-B.md`) — measured at ΔE 0.0956 max through a thirty-pass chain, against a ΔE 1.0 budget.
+
+**Not frozen: the export gamut-mapping policy.** This section says "linear P3 → tone encode → sRGB" and stops, and a P3 source exported to sRGB produces negative channels for everything outside the smaller gamut. Something has to decide what happens to them. Spike B's harness uses clip-per-channel in linear light and agrees with lcms2 at relative colorimetric to mean ΔE 0.08 — defensible, but currently a choice made in a test rather than here. Decide it before v0.1 exports.
 
 **Why not Rec.2020:** a container for a gamut this app will never receive on a display that can't show it. Sources are P3 and sRGB; outputs are P3 and sRGB. Rec.2020 spends precision on empty space and adds two matrix transforms per image for nothing.
 
@@ -598,6 +604,10 @@ These are product surface, so they're specified, not left to the implementation.
 
 The regression suite is not optional infrastructure — for a non-destructive editor it *is* the correctness argument.
 
+### 12.0 Colour suite
+
+Spike B's harness (`tests/color/`) is a permanent suite per §13, not a spike artefact. Eight tests, ~20 ms, no fixtures — it runs on every commit. Two of its tests cross-validate the harness against lcms2 rather than the pipeline against the harness, because a colour suite that only agrees with itself is green and meaningless.
+
 ### 12.1 Golden images
 
 A committed corpus of ~12 sources × ~8 documents, rendered and compared to blessed reference PNGs by ΔE2000 (max and mean thresholds per case).
@@ -678,7 +688,7 @@ photodesk/
 
 | Version | Scope | Estimate |
 |---|---|---|
-| **0.0** | Spikes A, B, C. `FORK-AUDIT.md` ✅, colour harness green, renderer path chosen. **No product.** | 3 weeks |
+| **0.0** | Spikes A, B, C. `FORK-AUDIT.md` ✅, colour harness green ✅, renderer path chosen. **No product.** | 3 weeks |
 | **0.1** | Open iPhone HEIF → exposure, contrast, highlights, shadows, blacks, temperature → before/after → export → colour correct end to end. Document model, graph compile, source-preservation and golden tests running. | 3 weeks |
 | **0.2** | Crop, rotate, straighten. Presets, copy/paste edits. Undo/redo at gesture granularity. | 2 weeks |
 | **0.3** | Colour tab: curves, HSL, grading wheels, vibrance. | 3 weeks |
@@ -708,7 +718,9 @@ photodesk/
 | # | Decision | Resolved by |
 |---|---|---|
 | ~~1~~ | ~~Fork or build from scratch~~ | **Closed 2026-09-05 — build. `FORK-AUDIT.md`** |
-| 2 | Working space and precision | Spike B |
+| ~~2~~ | ~~Working space and precision~~ | **Closed 2026-09-05 — linear Display P3 f16. `SPIKE-B.md`** |
+| 11 | Export gamut-mapping policy | Before v0.1 exports (§4) |
+| 12 | ICC extraction from real containers | The two blocked §2.2 corpus items, once `libheif-devel` is installed |
 | 3 | Preview renderer path | Spike C |
 | 4 | Pipeline v1 ordering | Golden-image validation |
 | 5 | Pre-1.0 vs post-1.0 reorder policy | Before v0.2 (§5) |
