@@ -1,6 +1,6 @@
 # PhotoDesk — Architecture Specification
 
-**Version:** 0.9
+**Version:** 0.10
 **Author:** Luis Howin
 **Platform:** Fedora Workstation / GNOME
 **Status:** Master spec for the coding agent. **Phase 0 complete.**
@@ -45,7 +45,8 @@ This table is the contract. Anything not listed is undecided and needs a decisio
 | Which AI providers ship | PROVISIONAL | Interface frozen, implementations swap freely |
 | **v1 discards iPhone HDR gain maps** | PROVISIONAL | → an HDR display, or the first wanted gain-mapped export (§4) |
 | **ICC extraction from real containers** | **FROZEN** | Measured (§2.2, `tests/color/tests/heif_icc.rs`): a Display P3 ICC survives a real HEIF container byte-identical, parses back to P3's red primary at X 0.5151 rather than sRGB's 0.4361, and drives the transform to max ΔE 0.41 — where ignoring it costs 3.43, so the test can tell the two apart. |
-| **HEVC decode needs `libheif-freeworld`** | **FROZEN as a platform fact** | Fedora's stock libheif ships no HEVC codec at all (patent policy) — measured, not assumed. An iPhone HEIC is HEVC, so §1's native subject and §14's v0.1 do not open without RPM Fusion's `libheif-freeworld`. Consequences for §13 packaging are below. |
+| **HEVC decode needs `libheif-freeworld`** | **FROZEN as a platform fact** | Fedora's stock libheif ships no HEVC codec at all (patent policy) — measured, not assumed. Installed here, and asserted by `tests/color/tests/heif_codecs.rs` so a mis-provisioned machine says so rather than failing to open a photograph. Consequences for §13 packaging below. |
+| **HEIC sources carry a ~0.9 ΔE conversion floor** | **FROZEN as a format fact** | libheif converts RGB↔YCbCr around every YCbCr codec. Measured identical to four decimals across libaom and x265, both asked for lossless — so it is the conversion, not compression. Apple ships YCbCr, so it is unavoidable on read. §12.1's HEIC thresholds must sit above it. |
 | **Export gamut-mapping policy** | PROVISIONAL | → before v0.1 exports (§4). §4 never named one; the Spike B harness uses clip-in-linear, which is a choice currently made in a test rather than in the spec. |
 | **No front-end framework: TypeScript + Vite, zero runtime dependencies** | **FROZEN** | The canvas needs none (Spike C), and §10/§11 specify the interaction surface closely enough that a component library would be overridden rather than used. Cost accepted knowingly: panels, undo and the keymap are hand-written, and the bill arrives at v0.2–v0.7, not v0.1. |
 
@@ -180,6 +181,8 @@ Opening a NEF gives the same tabs as opening a HEIF. That's the entire point.
 **A platform fact that arrived with the first real container test, and is worth knowing before v0.1 rather than during it.** Fedora ships `libheif` with **no HEVC codec at all** — its encoder and decoder lists for HEVC are both empty, while AV1, AVC, JPEG and JPEG 2000 are all present. That is a licensing decision, not an oversight: HEVC is patent-encumbered and Fedora will not ship it. RPM Fusion's `libheif-freeworld` supplies it.
 
 An iPhone HEIC is HEVC. So **the application's native subject does not open on a stock Fedora install**, and that is a dependency to declare rather than discover. See §13.
+
+**A second fact came out of testing the container properly, and it sets a floor nothing downstream can go below.** libheif converts RGB↔YCbCr around every YCbCr codec, and that conversion costs about **ΔE 0.9 at worst, 0.29 mean** on a 24-patch chart. It is measurably *not* compression: libaom and x265 — different codecs, different implementations, both asked for lossless — return the same figure to four decimal places, and only the uncompressed container avoids it entirely. Apple does not ship uncompressed, so **every HEIC PhotoDesk opens carries this before the pipeline sees a pixel.** §12.1's golden-image thresholds for HEIC sources have to sit above it, and no amount of care in §4 or §5 buys it back.
 
 ---
 
@@ -756,6 +759,7 @@ The second is the one that matches §9.4's existing posture — a missing capabi
 | 11 | Export gamut-mapping policy | Before v0.1 exports (§4) |
 | ~~12~~ | ~~ICC extraction from real containers~~ | **Closed 2026-09-06 — proven against a real container. `tests/color/tests/heif_icc.rs`** |
 | 13 | How the RPM handles HEVC — hard `Requires`, `Recommends` + runtime detection, or bundling | Before v0.7 packaging (§13); affects v0.1's decode error path now |
+| 14 | Golden-image thresholds for HEIC sources, which must clear the ~0.9 ΔE YCbCr floor (§3) | Before the first `--bless` (§12.1) |
 | 4 | Pipeline v1 ordering | Golden-image validation |
 | 5 | Pre-1.0 vs post-1.0 reorder policy | Before v0.2 (§5) |
 | 6 | Remote AI endpoint: self-hosted ComfyUI or gateway | Before v0.5 |
