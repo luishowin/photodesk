@@ -314,3 +314,43 @@ Worth noticing what found this. The test measured codec loss separately from pro
 ### Still blocked
 
 **The HDR gain-map corpus item**, and now for only one reason. The codec is present; what is missing is a real iPhone HEIC — there are none on this machine. `v1 discards iPhone HDR gain maps` keeps its existing exit (§4); what remains untested is that the SDR base decodes correctly while the gain map is ignored rather than misapplied. One photograph off a modern iPhone closes it.
+
+---
+
+## 2026-09-06 — real photographs; §4 verified against the device; spec v0.10 → v0.11
+
+An iPhone HEIC and an iPhone JPEG were made available. §2.2's last blocked corpus item is now exercised, and §4 has been checked against the thing it was written about rather than against a description of it.
+
+**The photographs are not in the repository and must not be.** They are personal files, §12.1 puts corpus binaries behind git-lfs, and `tests/color/tests/real_photos.rs` reads from `PHOTODESK_CORPUS_DIR` (defaulting to `~/Downloads`) and skips with an explanation when the directory is empty. The test reports structure and colour only — EXIF blocks are listed by type and size, never by value, because §6.1's export default is `keep-minus-gps` and a test log is not the place to leak a location.
+
+### §4's assumptions, all of which held
+
+| | HEIC | JPEG |
+|---|---|---|
+| Colour tag | ICC, 536 bytes | ICC, 536 bytes, reassembled from APP2 chunks |
+| Red colorant XYZ | (0.5151, 0.2412, −0.0011) | identical |
+| Interpretation | Display P3 | Display P3 |
+| Base image | 3024 × 4032, 8-bit luma and chroma | — |
+| Round trip through linear P3 f16 | **max ΔE 0.0000**, n=3072 | — |
+
+Three assumptions became facts. The manufacturer really does tag Display P3, in both containers, with the same profile — so §1's "take the manufacturer's rendering as the starting point" has something concrete to read rather than a hoped-for tag. The base image is **8-bit**, which is what carries Spike B's f16 headroom argument from synthetic ramps onto real material. And a real photograph survives the working space *exactly*: 0.0000, not 0.03.
+
+The JPEG's profile is reassembled by hand from APP2 segments rather than pulled from a decoder — thirty lines, no dependency, and the chunking is the part that goes wrong. A profile over 64 KB is split across numbered chunks that must be concatenated in order; miss that and a large profile silently truncates into something that still parses.
+
+### The gain map, seen rather than assumed
+
+`urn:com:apple:photo:2020:aux:hdrgainmap`, carried as an **auxiliary image** inside the same container rather than as a second top-level image, at **half resolution** — 1512 × 2016 against 3024 × 4032 — and 8-bit.
+
+Two consequences, both recorded in §4. **libheif's default decode returns the SDR base and does not apply it**, so v1's stated behaviour is what falls out of doing nothing, which is the safe direction and not a coincidence worth relying on silently. And if the exit condition is ever met, the map needs **upsampling** to base resolution rather than one-to-one sampling.
+
+`v1 discards iPhone HDR gain maps` keeps its exit condition and its PROVISIONAL state — the decision has not changed — but it is no longer untested. §4 insisted this be written down rather than merely implemented; it is now also a skip that can be seen.
+
+### The number that moved
+
+The same real pixels exported to sRGB shift by **max ΔE 2.86, mean 0.29**. That is not an error — it is P3 content being gamut-mapped, and it is visible at the top end.
+
+So **§16 #11 is not an abstract tidiness item.** The export gamut-mapping policy §4 never named is worth up to three ΔE on the user's own photographs, and it is currently decided in a test file (`GamutPolicy::ClipLinear`) rather than in the specification. That was easy to defer while the only evidence was a synthetic sweep containing the primaries themselves; it is harder to defer now.
+
+### Closed
+
+§2.2's corpus is complete. Every item it listed — the synthetic chart in both spaces, a real P3-tagged HEIF, a gain-mapped HEIC, an untagged screenshot, a wide-gamut gradient, and the deep-shadow ramp — now exists and is exercised.

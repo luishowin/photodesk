@@ -17,7 +17,7 @@ When something moves between states, append to `docs/DECISIONS.md` — what move
 
 ## Current state
 
-v0.0, **Phase 0 complete**. Spec is at v0.10. All three spikes have run and two of the three answers were not the expected ones.
+v0.0, **Phase 0 complete**. Spec is at v0.11. All three spikes have run and two of the three answers were not the expected ones.
 
 **Spike A** (2026-09-05) audited RapidRAW 1.6.3 and returned *do not fork*. Read `docs/FORK-AUDIT.md` before revisiting anything about the render path. Short version: the per-pixel chain is one `@compute` kernel in which stage order is the literal statement order, and vendored shaders are read-only, so the frozen "pipeline order is explicit and versioned" was unimplementable in a fork. Separately, RapidRAW has no colour management at all, cannot open HEIF, and on Linux ships every preview frame as a lossy JPEG over IPC.
 
@@ -29,7 +29,9 @@ v0.0, **Phase 0 complete**. Spec is at v0.10. All three spikes have run and two 
 
 **A HEIC costs ~0.9 ΔE before we see it** — RGB↔YCbCr conversion, identical across libaom and x265 at lossless, so it is inherent and unavoidable on read. §12.1's HEIC thresholds must clear it (§16 #14).
 
-Two things come first, neither a spike: name §4's export gamut-mapping policy, and confirm webkit2gtk-4.1 behaves like the webkitgtk-6.0 Spike C measured in.
+**§4 is verified against real photographs.** An iPhone HEIC and JPEG both tag Display P3 with the same 536-byte profile, the base image is 8-bit, and a real photograph round-trips through linear P3 f16 at max ΔE 0.0000. The gain map is a half-resolution auxiliary image and libheif's default decode ignores it, so v1's discard is a visible skip. **The photographs are not in the repo and must not be** — `real_photos.rs` reads `PHOTODESK_CORPUS_DIR` (default `~/Downloads`) and skips when empty, and reports EXIF by type and size only, never by value.
+
+Two things come first, neither a spike: name §4's export gamut-mapping policy — no longer abstract, since real P3 photographs move by up to ΔE 2.86 on export under the harness's clip-in-linear — and confirm webkit2gtk-4.1 behaves like the webkitgtk-6.0 Spike C measured in.
 
 **The front end has no framework** (2026-09-06, §10.3): TypeScript and Vite, zero runtime dependencies. Don't add React or a component library to make a panel easier — §11's slider contract is the reason the decision went this way, and a library's slider would be overridden rather than used. Panels, undo, focus and the keymap are hand-written by design.
 

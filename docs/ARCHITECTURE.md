@@ -1,6 +1,6 @@
 # PhotoDesk — Architecture Specification
 
-**Version:** 0.10
+**Version:** 0.11
 **Author:** Luis Howin
 **Platform:** Fedora Workstation / GNOME
 **Status:** Master spec for the coding agent. **Phase 0 complete.**
@@ -43,7 +43,7 @@ This table is the contract. Anything not listed is undecided and needs a decisio
 | **v1 pipeline stage ordering** | PROVISIONAL | → golden-image validation (§12.1) |
 | Document is stack-shaped on disk | PROVISIONAL | Until the stack becomes lossy for the graph (§6.2) |
 | Which AI providers ship | PROVISIONAL | Interface frozen, implementations swap freely |
-| **v1 discards iPhone HDR gain maps** | PROVISIONAL | → an HDR display, or the first wanted gain-mapped export (§4) |
+| **v1 discards iPhone HDR gain maps** | PROVISIONAL, **now exercised** | → an HDR display, or the first wanted gain-mapped export (§4). Confirmed against a real iPhone HEIC: the gain map is an auxiliary image under `urn:com:apple:photo:2020:aux:hdrgainmap` at half resolution, libheif's default decode returns the SDR base without applying it, and the discard is now a skip we can see rather than one we assume. |
 | **ICC extraction from real containers** | **FROZEN** | Measured (§2.2, `tests/color/tests/heif_icc.rs`): a Display P3 ICC survives a real HEIF container byte-identical, parses back to P3's red primary at X 0.5151 rather than sRGB's 0.4361, and drives the transform to max ΔE 0.41 — where ignoring it costs 3.43, so the test can tell the two apart. |
 | **HEVC decode needs `libheif-freeworld`** | **FROZEN as a platform fact** | Fedora's stock libheif ships no HEVC codec at all (patent policy) — measured, not assumed. Installed here, and asserted by `tests/color/tests/heif_codecs.rs` so a mis-provisioned machine says so rather than failing to open a photograph. Consequences for §13 packaging below. |
 | **HEIC sources carry a ~0.9 ΔE conversion floor** | **FROZEN as a format fact** | libheif converts RGB↔YCbCr around every YCbCr codec. Measured identical to four decimals across libaom and x265, both asked for lossless — so it is the conversion, not compression. Apple ships YCbCr, so it is unavoidable on read. §12.1's HEIC thresholds must sit above it. |
@@ -208,7 +208,23 @@ linear P3 → tone encode → sRGB (default) or Display P3 → ICC-tagged file
 
 Default export is sRGB, because that's what survives contact with the internet.
 
+**Measured against real files (2026-09-06), and §4's assumptions all held.** An iPhone HEIC and an iPhone JPEG, straight off the device:
+
+| | HEIC | JPEG |
+|---|---|---|
+| Colour tag | ICC, 536 bytes | ICC, 536 bytes in APP2 |
+| Red colorant XYZ | (0.5151, 0.2412, −0.0011) | identical |
+| Interpretation | **Display P3** | **Display P3** |
+| Base image | 3024 × 4032, **8-bit** luma and chroma | — |
+| Round trip through linear P3 f16 | **max ΔE 0.0000** over 3,072 real pixel samples | — |
+
+Three things follow that were assumptions this morning. The manufacturer really does tag P3, in both containers, with the same profile — so §1's "take the manufacturer's rendering as the starting point" has something concrete to read. The base image is **8-bit**, which is what makes Spike B's f16 headroom argument apply to real material rather than only to synthetic ramps. And a real photograph survives the working space exactly: not ΔE 0.03, but 0.0000 across the sampled grid.
+
+**The one number that moved is the export.** The same pixels taken to sRGB shift by **max ΔE 2.86, mean 0.29** — not an error, but real P3 content being gamut-mapped, and visible at the top end. §16 #11 (the gamut-mapping policy this section never named) is therefore not an abstract tidiness item: it is worth up to three ΔE on the user's own photographs, and the harness currently decides it in a test file.
+
 **HDR gain maps — v1 ignores them, and says so out loud.** A modern iPhone HEIC ships an SDR base image plus an ISO gain map that Photos.app applies on an HDR display. PhotoDesk v1 decodes the SDR base and discards the gain map. The reason it has to be *written down* rather than merely implemented: §1's thesis is to take the manufacturer's rendering as the starting point, and on an HDR display the manufacturer's rendering *is* the gain-mapped one — so an unstated drop means the app opens a photo looking flatter than the Photos.app the user just came from, and they conclude the colour pipeline is broken. It isn't; it's this decision. It is the right decision for v1 anyway, because the target display (§4) is a 60–70% sRGB laptop IPS that cannot show the difference. **Exit condition:** an HDR-capable display, or the first time a gain-mapped export is actually wanted. `image-hdr` is already in RapidRAW's dependency tree if that day comes.
+
+**What the gain map actually looks like, now that one has been opened.** It is an auxiliary image under `urn:com:apple:photo:2020:aux:hdrgainmap`, carried inside the same container as the base image rather than as a second top-level image, at **half resolution** — 1512 × 2016 against the base's 3024 × 4032 — and 8-bit. Two consequences. libheif's **default decode returns the SDR base and does not apply it**, so v1's behaviour is what falls out of doing nothing, which is the safe direction; and if the exit condition is ever met, the map has to be **upsampled** to base resolution rather than sampled one-to-one. The discard is now a skip we can see rather than one we assume, which is what §4 asked for when it insisted this be written down rather than merely implemented.
 
 **Display note, not a feature:** a 13.3" laptop IPS is likely 60–70% sRGB and uncalibrated. A colorimeter (~$150 USD) improves output more than any code here. It does **not** become an app feature — no soft-proof mode, no gamut overlay. Calibrate the display, trust the pipeline, edit the picture.
 
