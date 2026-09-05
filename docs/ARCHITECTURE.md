@@ -1,6 +1,6 @@
 # PhotoDesk — Architecture Specification
 
-**Version:** 0.4 (pre-code)
+**Version:** 0.5 (pre-code)
 **Author:** Luis Howin
 **Platform:** Fedora Workstation / GNOME
 **Status:** Master spec for the coding agent.
@@ -35,14 +35,15 @@ This table is the contract. Anything not listed is undecided and needs a decisio
 | History is session-only, never serialised | **FROZEN** | A sidecar accumulating every gesture grows without bound (§6.1). |
 | Cache paths are never written into the document | **FROZEN** | Corollary of "every cache is regenerable". A document naming a disposable file has a dangling reference. |
 | Providers run on a worker pool; `health()` is cached | **FROZEN** | §11 forbids blocking the canvas, and the trait signatures are synchronous. |
-| **Fork RapidRAW** | PROVISIONAL | → Spike A (§2.1) |
+| **Do not fork RapidRAW** | **FROZEN** | Spike A's gate failed 2 of 4 criteria (§2.1, `FORK-AUDIT.md`). Stage order is the statement order inside one vendored compute kernel, so "pipeline order is explicit and versioned" is unimplementable in a fork. |
+| **Build against `rawler` + `libheif` + our own shaders** | **FROZEN** | The §2.1 fallback, now the path. RapidRAW has no colour management and cannot open HEIF — §4 and §1's native subject were both greenfield inside the fork too. |
 | **Working space = linear Display P3 f16** | PROVISIONAL | → Spike B (§2.2) |
-| **Preview renderer path** | PROVISIONAL | → Spike C (§2.3). Naga transpilation is now the unlikely branch — see the compute-chain finding in §2.1. |
+| **Preview renderer path** | PROVISIONAL | → Spike C (§2.3). Naga transpilation is a live branch again: the compute chain that had no GLSL target was RapidRAW's, and we are not forking it. |
 | **v1 pipeline stage ordering** | PROVISIONAL | → golden-image validation (§12.1) |
 | Document is stack-shaped on disk | PROVISIONAL | Until the stack becomes lossy for the graph (§6.2) |
 | Which AI providers ship | PROVISIONAL | Interface frozen, implementations swap freely |
 | **v1 discards iPhone HDR gain maps** | PROVISIONAL | → an HDR display, or the first wanted gain-mapped export (§4) |
-| **Front-end framework** | PROVISIONAL | → Spike A (§2.1). A fork inherits React + Vite; no fork leaves it open. |
+| **Front-end framework** | PROVISIONAL | → Spike C. Spike A's exit is spent without resolving it — there is no fork to inherit from — and §0 forbids a provisional item with no exit. Re-pointed at the spike that first puts pixels in the webview. |
 
 ---
 
@@ -60,9 +61,13 @@ It is **not** a RAW laboratory. It doesn't reconstruct scene radiance, doesn't a
 
 ## 2. Phase 0 — three spikes before any product code
 
-Nothing in §4 onward is safe to build until these three questions are answered. Budget roughly **two weeks with no visible product**. That is not wasted time; it's the price of not discovering any of this in month four.
+Nothing in §4 onward is safe to build until these three questions are answered. Budget roughly **three weeks with no visible product**. That is not wasted time; it's the price of not discovering any of this in month four.
 
-### 2.1 Spike A — RapidRAW fork audit
+**Spike A is done. It failed its gate, and the failure was worth having in week one.** §2.1 below is kept as written — the questions it asked were the right ones and the answers are in `FORK-AUDIT.md`. Spikes B and C are open, and Spike C's shape changed as a result (§2.3).
+
+### 2.1 Spike A — RapidRAW fork audit — **COMPLETE, GATE FAILED**
+
+> **Result (2026-09-05):** criterion 1 passes, criterion 2 passes on its wording while the invariant behind it fails, criteria 3 and 4 fail. **No fork.** Three further findings — no colour management anywhere, no HEIF support, and a Linux preview that is a per-frame JPEG round-trip — say the fork would not have supplied §4, §1's native input format, or a preview path either. Full evidence, subsystem table and register consequences in [`FORK-AUDIT.md`](FORK-AUDIT.md). The section below is preserved as the question that was asked.
 
 Do not assume the Rust core separates cleanly from the front end. In a solo-built Tauri app the "backend" is frequently organised around front-end-shaped IPC commands, in which case there is no engine to fork — only an application to read.
 
@@ -131,7 +136,16 @@ Linear Display P3 f16 is the leading candidate (§4), not a decision. Prove it.
 
 Establish whether the same WGSL can drive both paths on Fedora (§7.2). Success is a slider moving an image at proxy resolution inside the webview, at budget (§7.3), **and the working space actually representable** — RGBA16F as a colour-renderable target with linear filtering, which on WebGL2 means `EXT_color_buffer_float` on this machine's WebKitGTK. That second clause is not padding: without it Spike B can freeze f16 against a preview path that turns out unable to render to it, and the two spikes would each be individually green and jointly wrong.
 
-**The audit has already made the first question much less open.** Per §2.1, RapidRAW's chain is compute end to end — `@compute` entry points, a `texture_storage_2d` output, a storage buffer of adjustments. GLSL ES 3.0 has no compute shaders, no storage textures and no storage buffers, so this is not `naga` having gaps; there is no target construct to lower those onto. Plan on §7.2's fallback as the expected outcome rather than a contingency: **the preview chain is hand-written as WebGL2 fragment shaders.** One shader source is then preserved by making the shared artefact the *shader body* — the per-pixel maths in an included file, emitted for both targets — rather than the dispatch mechanism around it. If that sharing proves unworkable, the thing under threat is §0's one-shader-source invariant itself, and it gets escalated to a register change rather than quietly patched.
+**Spike A reopened the first question.** The chain that was compute end to end — `@compute` entry points, a `texture_storage_2d` output, a storage buffer of adjustments — was *RapidRAW's*, and the fork is off (§2.1). None of that reasoning binds a chain we author ourselves.
+
+So the branch that looked foreclosed is live again. **Author fragment-first**: `@fragment` entry points, uniform buffers instead of storage buffers, sampled textures instead of storage textures, rendering to a framebuffer attachment instead of `textureStore`. The constructs with no GLSL ES 3.0 target are then never used, and §7.2's "author once in WGSL, transpile with `naga`" is a candidate rather than a dead end.
+
+Two things make that fit rather than merely allow it:
+
+- **§5's per-layer loop is what makes a uniform buffer sufficient.** RapidRAW needed a storage buffer because it blends 32 mask parameter blocks in one pass. PhotoDesk runs the loop body once per layer, so a pass carries one layer's parameters — tone curves dominate at 4 × 16 points, and the block lands well under GLES3's guaranteed 16 KB uniform-buffer minimum.
+- **§7.3 already requires stages 2–9 fused into one pass**, and a fused per-pixel pass *is* a fragment shader.
+
+**This is a hypothesis and the spike has to test it, not assume it.** Run `naga`'s GLSL backend at `300 es` against a real fragment shader of ours before anything is claimed. The fallback is unchanged if it fails: hand-write the preview chain, roughly fifteen fragment shaders of well-understood per-pixel maths, and preserve one shader source by making the shared artefact the *shader body* — the maths in an included file, emitted for both targets — rather than the dispatch mechanism around it. If even that sharing proves unworkable, the thing under threat is §0's one-shader-source invariant itself, and it gets escalated to a register change rather than quietly patched.
 
 Run this spike early. Its outcome decides how every shader in the project is written, and that is not a decision to discover twenty shaders in.
 
@@ -346,7 +360,9 @@ Tauri on Linux uses a GTK/WebKit webview, and the native-wgpu-behind-the-webview
 
 **Candidate:** preview in the webview via WebGL2; export in Rust via wgpu; author once in WGSL and transpile to GLSL ES 3.0 with `naga` at build time. Zero per-frame IPC, and the interactive path lands in a technology already written fluently here.
 
-**Risk, now measured rather than suspected (§2.1):** the chain to be transpiled is compute-based, and `naga`'s GLSL backend cannot lower compute shaders, storage textures or storage buffers to GLSL ES 3.0 because those constructs do not exist there. **Fallback:** hand-write the preview chain in GLSL. Roughly fifteen fragment shaders of well-understood per-pixel math — tedious, not hard. WebGPU in WebKitGTK is the eventual clean answer but not yet dependable.
+**Constraint, measured (§2.1):** `naga`'s GLSL backend cannot lower compute shaders, storage textures or storage buffers to GLSL ES 3.0, because those constructs do not exist there. That killed the candidate only while the chain to be transpiled was RapidRAW's. Ours is written fragment-first (§2.3), which stays inside what GLSL ES 3.0 has. **Fallback if transpilation still fails:** hand-write the preview chain in GLSL. Roughly fifteen fragment shaders of well-understood per-pixel math — tedious, not hard. WebGPU in WebKitGTK is the eventual clean answer but not yet dependable.
+
+**RapidRAW does not solve this on Linux, and its non-solution is worth knowing.** It disables its wgpu renderer on Linux outright, reads back every frame to the CPU, mozjpeg-encodes it at quality 65–85 and ships the bytes over IPC. That is the far end of the trade from "zero per-frame IPC", and it is 8-bit and lossy. Independent confirmation that the surface-contention problem is real, and that there is no free path hiding in a fork.
 
 ### 7.3 Performance budget
 
@@ -637,10 +653,10 @@ photodesk/
 │   ├── canvas/                 ← viewport, preview renderer, before/after
 │   └── design/                 ← tokens, type scale
 ├── src-tauri/src/
-│   ├── engine/                 ← vendored upstream (per Spike A). Read-only. Absent if the gate failed.
+│   ├── engine/                 ← our render core: decode, colour, GPU dispatch, shaders
 │   ├── photodesk/              ← document → engine bridge, IO, cache, export
 │   └── ai/                     ← provider registry, routing
-├── shaders/photodesk/          ← WGSL source of truth. Absent if the chain classified ADAPT
+├── shaders/photodesk/          ← WGSL source of truth. The only shader source (Spike A gate failed)
 ├── providers/                  ← LocalCpu, RemoteHttp, ComfyUI, LocalGpu
 ├── tests/
 │   ├── golden/                 ← corpus + blessed references
@@ -650,7 +666,7 @@ photodesk/
 └── packaging/rpm/
 ```
 
-**Exactly one of `engine/`'s shader chain and `shaders/photodesk/` exists.** Which one is Spike A's output (§2.1). Two live shader sources is the WYSIWYG drift §0 freezes against, wearing a directory layout as a disguise.
+**There is exactly one shader source, `shaders/photodesk/`, and it is ours.** Spike A's gate failed, so nothing is vendored and `engine/` is our own render core rather than somebody else's, read-write like the rest of the tree. Two live shader sources is the WYSIWYG drift §0 freezes against, wearing a directory layout as a disguise; the ambiguity that made that possible is gone.
 
 `DECISIONS.md` is an append-only log: each entry records what moved from PROVISIONAL to FROZEN, the spike that resolved it, and the date. The §0 register is the current state; this is the history.
 
@@ -662,7 +678,7 @@ photodesk/
 
 | Version | Scope | Estimate |
 |---|---|---|
-| **0.0** | Spikes A, B, C. `FORK-AUDIT.md`, colour harness green, renderer path chosen. **No product.** | 2 weeks |
+| **0.0** | Spikes A, B, C. `FORK-AUDIT.md` ✅, colour harness green, renderer path chosen. **No product.** | 3 weeks |
 | **0.1** | Open iPhone HEIF → exposure, contrast, highlights, shadows, blacks, temperature → before/after → export → colour correct end to end. Document model, graph compile, source-preservation and golden tests running. | 3 weeks |
 | **0.2** | Crop, rotate, straighten. Presets, copy/paste edits. Undo/redo at gesture granularity. | 2 weeks |
 | **0.3** | Colour tab: curves, HSL, grading wheels, vibrance. | 3 weeks |
@@ -691,19 +707,21 @@ photodesk/
 
 | # | Decision | Resolved by |
 |---|---|---|
-| 1 | Fork or build from scratch | Spike A |
+| ~~1~~ | ~~Fork or build from scratch~~ | **Closed 2026-09-05 — build. `FORK-AUDIT.md`** |
 | 2 | Working space and precision | Spike B |
 | 3 | Preview renderer path | Spike C |
 | 4 | Pipeline v1 ordering | Golden-image validation |
 | 5 | Pre-1.0 vs post-1.0 reorder policy | Before v0.2 (§5) |
 | 6 | Remote AI endpoint: self-hosted ComfyUI or gateway | Before v0.5 |
 | 7 | Icon — `PD` monogram or geometric mark, monochrome, no aperture | Whenever; the 16×16 render is the only test |
-| 8 | Front-end framework | Spike A — a fork inherits React + Vite + i18next; no fork leaves it open |
+| 8 | Front-end framework | Spike C — Spike A's exit is spent and there is no fork to inherit from |
 | 9 | HDR gain map handling beyond v1's discard | An HDR display, or the first wanted gain-mapped export (§4) |
 | 10 | Layer count at which frame rate is allowed to fall | Measured against the §7.3 bound of 6 |
 
 **Licensing:** RapidRAW is AGPL-3.0. A licensing review is required before any redistribution, publication or portfolio use.
 
-**Sequence that review to gate Spike A's conclusion, not shipping.** The fork decision commits months of work; discovering afterwards that the licence forecloses the intended use means discovering it at the most expensive available moment, which is the same failure mode §2 exists to prevent everywhere else. The repository is public from v0.0, which makes the question live now rather than later — and is a reason to keep the repository spec-only until the gate is decided.
+That review was sequenced to gate Spike A's conclusion rather than shipping, because the fork decision commits months of work and this repository is public. **The engineering gate failed first, so the review is off the critical path for that decision** — nothing is being vendored, adapted or redistributed, because there is no fork. Two things stay true: `FORK-AUDIT.md` quotes identifiers and line numbers for audit purposes and copies no source, and "architectural reference" means reading their code and then writing ours, which is a distinct question worth raising if a review still happens.
+
+**The specification-only constraint lifts.** It existed because the fork decision was live and this repository is public. The decision is closed and the code that follows is original.
 
 The review itself is out of scope for this document and is not an engineering decision. Nothing here should be read as legal advice.
