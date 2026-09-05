@@ -7,8 +7,11 @@
 //! instead of adopted on a hunch.
 
 use crate::colour::{LINEAR_P3, Mat3, Space};
+use crate::gamut::luma_weights;
 use crate::workload::Workload;
 use half::f16;
+
+pub use crate::gamut::{EXPORT_GAMUT_POLICY, GamutPolicy};
 
 /// Precision of the working buffer between render passes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,22 +43,6 @@ impl Precision {
     }
 }
 
-/// What to do with a channel that falls outside the destination gamut on export.
-///
-/// **§4 does not name a policy.** It says "linear P3 → tone encode → sRGB (default)
-/// or Display P3 → ICC-tagged file" and stops. A P3 source exported to sRGB produces
-/// negative channels for anything outside the smaller gamut, and something has to
-/// decide what happens to them. Recorded here as an explicit choice so the decision
-/// is visible rather than emergent; see the note in `SPIKE-B.md`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GamutPolicy {
-    /// Clip each channel to [0,1] after the matrix, in linear light.
-    /// Equivalent in intent to ICC relative colorimetric with clipping.
-    ClipLinear,
-    /// Leave out-of-range values alone. Only meaningful for measurement.
-    None,
-}
-
 /// The chain a pixel takes: source encoding -> working space -> output encoding.
 #[derive(Clone, Copy, Debug)]
 pub struct Pipeline {
@@ -77,7 +64,7 @@ impl Default for Pipeline {
     fn default() -> Self {
         Self {
             precision: Precision::F16,
-            gamut: GamutPolicy::ClipLinear,
+            gamut: EXPORT_GAMUT_POLICY,
             passes: 1,
             workload: Workload::Identity,
         }
@@ -127,14 +114,14 @@ impl Pipeline {
     }
 
     /// Working space -> encoded output values.
+    ///
+    /// The gamut map runs in linear destination RGB, between the matrix and the
+    /// transfer curve. That position is not incidental: the destination gamut is
+    /// exactly the unit cube there, and doing it after the encode would fold the
+    /// curve's own shape into the geometry (§16 #11, `gamut.rs`).
     pub fn emit(&self, working: [f32; 3], dst: &Space) -> [f32; 3] {
         let m: Mat3 = self.working().linear_to(dst);
-        let mut lin = m.apply(working);
-        if self.gamut == GamutPolicy::ClipLinear {
-            for c in lin.iter_mut() {
-                *c = c.clamp(0.0, 1.0);
-            }
-        }
+        let lin = self.gamut.map(m.apply(working), dst);
         [
             dst.transfer.from_linear(lin[0]),
             dst.transfer.from_linear(lin[1]),
@@ -168,8 +155,8 @@ impl Pipeline {
         self.emit(w, dst)
     }
 
-    /// The same chain carried out entirely in f64, with no working-buffer quantisation
-    /// and no gamut clip. This is the answer the pipeline is *trying* to compute, so
+    /// The same chain carried out entirely in f64, with no working-buffer
+    /// quantisation. This is the answer the pipeline is *trying* to compute, so
     /// the distance between the two is exactly the cost of the buffer format — not
     /// contaminated by the transforms, which both paths share.
     pub fn reference_run(&self, encoded: [f32; 3], src: &Space, dst: &Space) -> [f32; 3] {
@@ -188,16 +175,15 @@ impl Pipeline {
             w = self.workload.apply(w, i);
         }
         let from_w = self.working().linear_to(dst).0;
-        let mut out = [
+        let out = [
             from_w[0][0] * w[0] + from_w[0][1] * w[1] + from_w[0][2] * w[2],
             from_w[1][0] * w[0] + from_w[1][1] * w[1] + from_w[1][2] * w[2],
             from_w[2][0] * w[0] + from_w[2][1] * w[1] + from_w[2][2] * w[2],
         ];
-        if self.gamut == GamutPolicy::ClipLinear {
-            for c in out.iter_mut() {
-                *c = c.clamp(0.0, 1.0);
-            }
-        }
+        // The *same* policy, instantiated at f64. Not a second implementation of it:
+        // divergence between these two paths is meant to be the cost of the buffer
+        // format, and a transcribed gamut map would quietly add itself to that number.
+        let out = self.gamut.map_with(out, luma_weights(dst));
         [
             dst.transfer.from_linear(out[0] as f32),
             dst.transfer.from_linear(out[1] as f32),

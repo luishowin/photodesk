@@ -10,42 +10,21 @@
 //! files, §12.1 puts corpus binaries behind git-lfs, and a test that only runs where
 //! the data is happens to be the honest arrangement here. Point `PHOTODESK_CORPUS_DIR`
 //! at a directory of real photographs, or drop them in `~/Downloads`; absent them this
-//! test skips and says what it would have checked.
+//! test skips and says what it would have checked. Where that directory is, and which
+//! file in it gets picked, live in `corpus.rs` — `gamut_policy.rs` needs the same
+//! answer, and two copies of it would be two answers.
 //!
 //! This test reads structure and colour. It does not print EXIF values — §6.1's export
 //! default is `keep-minus-gps`, and a test log is not the place to leak a location.
 
 use libheif_rs::{ColorProfile, ColorSpace, HeifContext, ImageHandle, LibHeif, RgbChroma};
 use photodesk_color::colour::{DISPLAY_P3, SRGB, Space, encoded_to_lab};
+use photodesk_color::corpus::{corpus_dir, find_heic, find_jpeg};
 use photodesk_color::delta_e::{DeltaStats, ciede2000};
 use photodesk_color::working::{Pipeline, Precision};
-use std::path::{Path, PathBuf};
 
 /// Apple stores the HDR gain map as an auxiliary image under this URN.
 const APPLE_GAIN_MAP: &str = "urn:com:apple:photo:2020:aux:hdrgainmap";
-
-fn corpus_dir() -> PathBuf {
-    std::env::var("PHOTODESK_CORPUS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Downloads")
-        })
-}
-
-fn find_heic(dir: &Path) -> Option<PathBuf> {
-    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("heic") || e.eq_ignore_ascii_case("heif"))
-        })
-        .collect();
-    found.sort();
-    found.into_iter().next()
-}
 
 fn describe(handle: &ImageHandle, indent: &str) {
     println!(
@@ -307,22 +286,6 @@ fn jpeg_icc(bytes: &[u8]) -> Option<Vec<u8>> {
     }
     chunks.sort_by_key(|(seq, _)| *seq);
     Some(chunks.into_iter().flat_map(|(_, d)| d.iter().copied()).collect())
-}
-
-fn find_jpeg(dir: &Path) -> Option<PathBuf> {
-    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg"))
-        })
-        .collect();
-    // Prefer the largest: a camera original rather than a downloaded thumbnail.
-    found.sort_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0));
-    found.pop()
 }
 
 #[test]

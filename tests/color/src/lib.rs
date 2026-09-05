@@ -11,5 +11,6 @@
 pub mod colour;
 pub mod corpus;
 pub mod delta_e;
+pub mod gamut;
 pub mod working;
 pub mod workload;

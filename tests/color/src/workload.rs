@@ -23,6 +23,7 @@ pub trait Real: Copy {
     fn add(self, o: Self) -> Self;
     fn sub(self, o: Self) -> Self;
     fn mul(self, o: Self) -> Self;
+    fn div(self, o: Self) -> Self;
     fn max(self, o: Self) -> Self;
     fn min(self, o: Self) -> Self;
 }
@@ -49,6 +50,10 @@ macro_rules! impl_real {
             #[inline]
             fn mul(self, o: Self) -> Self {
                 self * o
+            }
+            #[inline]
+            fn div(self, o: Self) -> Self {
+                self / o
             }
             #[inline]
             fn max(self, o: Self) -> Self {

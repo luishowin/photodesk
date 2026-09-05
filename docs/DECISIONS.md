@@ -354,3 +354,90 @@ So **§16 #11 is not an abstract tidiness item.** The export gamut-mapping polic
 ### Closed
 
 §2.2's corpus is complete. Every item it listed — the synthetic chart in both spaces, a real P3-tagged HEIF, a gain-mapped HEIC, an untagged screenshot, a wide-gamut gradient, and the deep-shadow ramp — now exists and is exercised.
+
+---
+
+## 2026-09-06 — §16 #11 closed: the export gamut-mapping policy; spec v0.11 → v0.12
+
+§4 said "linear P3 → tone encode → sRGB" and stopped. The policy that filled the gap was one `clamp` in `working.rs`, put there so Spike B's test 2 could be written at all, and recorded at the time as "defensible, but it *is* a choice, and it is currently made in a test harness rather than in the specification". The real photographs of the previous entry priced it: **max ΔE 2.86 on the user's own pictures**. This entry closes it.
+
+Harness: `tests/color/src/gamut.rs`, `tests/color/tests/gamut_policy.rs`, `tests/renderer/shaders/encode.wgsl`, `tests/renderer/tests/encode_stage.rs`.
+
+### The measurement had to be arranged around a trap
+
+The obvious instrument is ΔE from the original, lowest wins. It picks the wrong policy, and it does so *confidently* — the fourth time in this project a clean number has turned out to be about something else.
+
+Clamping each channel to [0,1] is exactly the Euclidean projection onto the gamut cube. **The clip is the nearest in-gamut colour**, measured in linear RGB — a space nobody perceives in. Searching for the perceptually nearest colour scores better still and is not shippable:
+
+| policy | mean ΔE | max ΔE | fragment shader? |
+|---|---|---|---|
+| clip each channel | 3.3176 | 6.8254 | yes |
+| **constant-luminance chroma clip** | 4.5022 | 13.5083 | yes |
+| + soft knee, k = 0.95 | 4.6830 | 13.6633 | yes |
+| nearest in Lab (control) | **3.0906** | **5.7889** | **no — a per-pixel search** |
+
+Both distance-minimising policies leave **81 of 81** out-of-gamut samples *on* the gamut surface, because minimising a distance is projecting to the surface whatever the distance is. The lowest ΔE and the flattest gradient are the same answer, so ΔE cannot rank these and the file does not try.
+
+### Nor is there an answer to defer to
+
+Perceptual rendering lives in a profile's B2A lookup tables, and neither sRGB nor Display P3 has any — they are matrix/TRC profiles. lcms2 returns the same transform to **ΔE 0.000000** whether asked for perceptual, saturation or relative colorimetric. Asserted rather than believed, because it is the single fact that decides whether §16 #11 is our decision or somebody else's default.
+
+### What the error is made of
+
+| | clip each channel | **constant-luminance chroma clip** | + knee 0.95 |
+|---|---|---|---|
+| \|ΔL*\| max / mean | 2.815 / 1.143 | **0.000 / 0.000** | 0.000 / 0.000 |
+| \|ΔC*\| max / mean | **37.97 / 13.02** | 58.05 / 18.39 | 58.85 / 19.34 |
+| \|ΔH\| max / mean | **10.73 / 2.16** | 25.36 / 4.00 | 25.57 / 4.14 |
+| worst boundary ramp | **28 of 33 codes**, one step at ΔE 0.0000 | 33 of 33, min step 0.2688 | 33 of 33 |
+| in-gamut colour | bit-identical | bit-identical | up to ΔE 0.69 |
+
+Reported as ΔL\*/ΔC\*/ΔH rather than as a hue *angle*: swinging a nearly-grey colour thirty degrees is arithmetic, not a visible error, and the angle overstates itself at low chroma. The chroma-weighted term confirmed the effect was real rather than an artefact of the unit — which is what it was there to decide.
+
+### The photograph reversed what the synthetic ramp implied
+
+The ramps are built from mid grey to the Display P3 corners and are hostile on purpose. A photograph is not. Adjacent-pixel collapse on a real iPhone HEIC (`IMG_7604.HEIC`, 3024 × 4032, Display P3; 54,338 sampled pixels, 3.06% outside sRGB; 60,304 neighbouring pairs that differ in the source and touch the boundary):
+
+| policy | pairs merged into one colour | frame touched that the clip left alone | in-gamut max ΔE |
+|---|---|---|---|
+| clip each channel | 75 (0.12%) | 0.00% | 0.0000 |
+| **constant-luminance chroma clip** | **39 (0.06%)** | **0.00%** | **0.0000** |
+| + knee 0.95 | 29 (0.05%) | 3.23% | 1.0102 |
+| + knee 0.90 | 30 | 10.41% | 2.0043 |
+| + knee 0.80 | 33 | 22.23% | 3.8222 |
+
+The flattening the ramp dramatises is, on a photograph, seventy-five pixel pairs in sixty thousand. **Compression buys ten of them by modifying 3.23% of the frame that was already correct** — a broad, measurable cost against a narrow, invisible one. Rejected.
+
+### Frozen: clip chroma at constant luminance
+
+Slide the colour along the ray from the achromatic point *of its own luminance* until it is exactly on the gamut boundary. The vector being scaled carries zero luminance by construction, so L\* is exact rather than nearly-exact and chroma is the only thing spent.
+
+Three reasons, each a sentence, per §0's rule:
+
+- **The clip's error has no policy.** How much lightness a colour loses depends on which channel happened to run out first — up to 2.8 L\* — and a WYSIWYG editor cannot say what became of a colour if the answer is "it depends".
+- **It halves the detail loss for free**: 75 merged pairs to 39, at zero cost inside the gamut and the same handful of ALU ops.
+- **It has no constant to tune.** The knee variant is better at gradients and was rejected for exactly that reason — a number with no derivation behind it is not frozen, it is a habit.
+
+**The cost, recorded rather than discovered later.** On extreme saturation this policy moves hue and chroma more than the clip does, ΔH 25.4 against 10.7, on a corpus containing the P3 primaries themselves. No camera produces those colours and on the photograph the gap is 0.13 ΔE of mean movement — but it is the direction the policy is weakest in. A golden image showing a saturated red drift toward pink is the signal to reopen this, and `GamutPolicy::CompressLuma` plus its knee sweep are in the tree so that reopening it is a one-line change.
+
+### It runs where §0 requires it to run
+
+Stage 13 is the only stage every pixel of *both* paths goes through, and §0 freezes preview and export to one shader source — so a policy that cannot be expressed in a fragment shader is not adoptable whatever its colorimetry. That is the shape of the finding that killed the fork, and this time it was asked in advance rather than discovered.
+
+`shaders/encode.wgsl` lowers to GLSL ES 3.00 (1,385 bytes vertex, 2,534 fragment) and, run through wgpu, agrees with the Rust reference to **one colour-attachment step** — bit-exactly the reference truncated to f16 on **48,020 of 49,152 channels**. The reference is imported from `photodesk-color` rather than transcribed, so the two sides cannot agree with each other and be wrong together.
+
+**New register item, and it is not about this policy.** Getting that agreement to read cleanly meant finding out why it was 4.9 × 10⁻⁴ off, and the answer was the instrument again: on RADV/RENOIR the **RGBA16F colour attachment truncates toward zero rather than rounding to nearest**. A full-step bias on every stored channel, the driver's rounding mode and not the shader's arithmetic. Recorded as a platform fact and opened as §16 #15, because a golden-image threshold that does not allow for it will fail a correct render.
+
+### One green test was measuring the wrong thing, and said so
+
+Flipping the frozen constant took Spike B's **test 2 from mean ΔE 0.0807 to 1.4183 against its own 1.5 threshold** — still green, and no longer measuring what it was written to measure. Its reference converter clamps in linear f64, so it *is* clip-in-linear; running the pipeline under any other policy turns the test into a comparison between two gamut policies wearing a transform-fidelity label.
+
+Test 2 is now pinned to `GamutPolicy::ClipLinear` with the reason written next to it. This is the same failure mode as the pass sweep of no-ops and the headroom table destroyed by quantisation, and it is worth noting that the thing that caught it was a number moving by seventeen times while staying inside its bar.
+
+### Also in this change
+
+**§2.2's `BLOCKED` corpus list is empty and kept.** It still declared two items as needing `libheif-devel`, which arrived on 2026-09-06 — the previous entry closed both, and the code had not heard. The mechanism stays, and empty, because the next blocked item should announce itself in a test run.
+
+**The corpus photographs were removed from `~/Downloads` during this session.** The real-photograph figures above are from `IMG_7604.HEIC` and are not reproducible on this machine until a photograph is put back; `real_photos.rs` and `gamut_policy.rs` both skip with an explanation, which is the arrangement those tests were built for. The ΔL\*/ΔC\*/ΔH decomposition on real pixels was not captured before the directory emptied — the test computes it now, and it is the one number in this entry that is still owed.
+
+The path was exercised after the fact against a **synthetic P3 gradient stand-in** built with libheif — a 1200 × 1600 saturated sweep, 85% of it outside sRGB, which is a corpus item and emphatically not a photograph. Reported only because the shape it gives is the same one at a larger amplitude: collapse falls from **15,556 of 128,007 pairs under the clip to 4,673** under the frozen policy, and the knee then recovers only **267** more. On saturated content the constant-luminance clip takes nearly all of the available gradient back, and the knee is buying the last few percent at full price.

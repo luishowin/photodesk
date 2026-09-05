@@ -2,9 +2,9 @@
 //!
 //! Four of the six items are synthetic and buildable with nothing installed. The two
 //! that are not — a real iPhone HEIF with an embedded P3 profile, and an iPhone HEIC
-//! carrying an ISO gain map — need `libheif-devel`, which is not present on this
-//! machine. They are declared here so the gap is visible in code rather than only in
-//! a document, and so the day the package lands the corpus is one function away.
+//! carrying an ISO gain map — needed `libheif-devel` and a real photograph, and both
+//! arrived on 2026-09-06. [`BLOCKED`] is the mechanism that made the gap visible in
+//! code rather than only in a document; it is kept, and empty.
 
 use crate::colour::{DISPLAY_P3, SRGB, Space, Transfer};
 
@@ -84,6 +84,52 @@ pub fn wide_gamut_gradient() -> Vec<[u8; 3]> {
     v
 }
 
+/// Ramps that start inside sRGB and run out of it — the corpus item the *export*
+/// gamut policy is judged on (§16 #11).
+///
+/// §2.2's deep-shadow ramp asks whether the working space can carry sixteen adjacent
+/// codes without collapsing them. This asks the same question of the other end of the
+/// chain. A gradient that runs off the edge of the destination gamut is where a naive
+/// export policy shows itself, and it is the shape real content has: a sunset, a
+/// backlit petal, a saturated sky. Encoded Display P3 values, because that is what a
+/// file actually holds — a gradient in a photograph is a gradient in encoded codes,
+/// not in linear light.
+///
+/// Each ramp runs from mid grey to a fully saturated Display P3 corner, so it is
+/// inside sRGB at one end and well outside at the other, and the crossing happens
+/// somewhere in the middle where a policy has to make a choice per step rather than
+/// once.
+pub fn gamut_boundary_ramps() -> Vec<(&'static str, Vec<[u8; 3]>)> {
+    const STEPS: i32 = 32;
+    const TARGETS: [(&str, [i32; 3]); 6] = [
+        ("red", [255, 0, 0]),
+        ("green", [0, 255, 0]),
+        ("blue", [0, 0, 255]),
+        ("yellow", [255, 255, 0]),
+        ("cyan", [0, 255, 255]),
+        ("magenta", [255, 0, 255]),
+    ];
+
+    TARGETS
+        .iter()
+        .map(|(name, target)| {
+            let ramp = (0..=STEPS)
+                .map(|i| {
+                    let t = i as f32 / STEPS as f32;
+                    let mut out = [0u8; 3];
+                    for (k, cell) in out.iter_mut().enumerate() {
+                        let from = 128.0;
+                        *cell = (from + t * (target[k] as f32 - from)).round().clamp(0.0, 255.0)
+                            as u8;
+                    }
+                    out
+                })
+                .collect();
+            (*name, ramp)
+        })
+        .collect()
+}
+
 /// §2.2's deep-shadow ramp: codes 0 through 16 inclusive, 17 steps.
 ///
 /// The item the spike exists for. Half float has ~11 bits of significand and linear
@@ -100,24 +146,20 @@ pub struct Unavailable {
     pub why_it_matters: &'static str,
 }
 
-/// The two §2.2 corpus items that are blocked, stated rather than quietly omitted.
-pub const BLOCKED: [Unavailable; 2] = [
-    Unavailable {
-        item: "iPhone HEIF with an embedded Display P3 profile",
-        needs: "libheif-devel (runtime libheif.so.1.21.2 is present; no pkg-config .pc)",
-        why_it_matters: "The only corpus item that tests ICC extraction from a real \
-                         container. Synthetic patches prove the matrices; they cannot \
-                         prove we read the profile that says which matrices to use.",
-    },
-    Unavailable {
-        item: "iPhone HEIC carrying an ISO HDR gain map",
-        needs: "libheif-devel, and a gain-map-aware decode path",
-        why_it_matters: "§4 discards the gain map in v1 deliberately. The test that \
-                         matters is that the SDR base decodes correctly and the gain \
-                         map is ignored rather than misapplied — which is a different \
-                         assertion from 'we do not support it'.",
-    },
-];
+/// Corpus items that cannot be built on this machine, stated rather than quietly
+/// omitted.
+///
+/// **Empty, and kept.** It held two entries — a real P3-tagged iPhone HEIF and a
+/// gain-mapped HEIC — from the day Spike B was written until 2026-09-06, when
+/// `libheif-devel` and real photographs both arrived and `heif_icc.rs` and
+/// `real_photos.rs` closed them (`DECISIONS.md`). The mechanism stays because the
+/// next blocked item should land in code where a test prints it, not in a document
+/// where it is somebody's job to remember it.
+///
+/// Note what this list is *not* for: `real_photos.rs` skipping because the corpus
+/// directory is empty is a different thing entirely — the item exists and can be
+/// built, this machine just has no photograph in front of it today.
+pub const BLOCKED: [Unavailable; 0] = [];
 
 /// High-precision reference conversion between two encoded spaces, in f64 throughout.
 ///
@@ -182,4 +224,54 @@ pub fn colorchecker_display_p3() -> Vec<[f64; 3]> {
             reference_convert(e, &SRGB, &DISPLAY_P3)
         })
         .collect()
+}
+
+
+// ------------------------------------------------------------- real photographs
+
+/// Where the real-photograph corpus lives.
+///
+/// **The photographs are not in the repository and must not be.** They are personal
+/// files; §12.1 puts corpus binaries behind git-lfs; and a test that only runs where
+/// the data is happens to be the honest arrangement. Point `PHOTODESK_CORPUS_DIR` at
+/// a directory of real photographs, or drop them in `~/Downloads`.
+///
+/// Lives here rather than in one of the test files because two of them need it now,
+/// and a second copy of "where the photographs are" is a second thing to keep in step.
+pub fn corpus_dir() -> std::path::PathBuf {
+    std::env::var("PHOTODESK_CORPUS_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Downloads")
+        })
+}
+
+fn find_by_extension(dir: &std::path::Path, exts: &[&str]) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| exts.iter().any(|w| e.eq_ignore_ascii_case(w)))
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// The first HEIC/HEIF in the corpus directory, in name order so runs are repeatable.
+pub fn find_heic(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    find_by_extension(dir, &["heic", "heif"]).into_iter().next()
+}
+
+/// The largest JPEG in the corpus directory — a camera original rather than a
+/// downloaded thumbnail.
+pub fn find_jpeg(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut found = find_by_extension(dir, &["jpg", "jpeg"]);
+    found.sort_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0));
+    found.pop()
 }

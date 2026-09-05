@@ -237,11 +237,25 @@ pub fn xyz_to_lab(xyz: [f64; 3]) -> [f64; 3] {
 
 /// Encoded RGB in `space` -> CIE L*a*b*, for measurement only.
 pub fn encoded_to_lab(rgb: [f32; 3], space: &Space) -> [f64; 3] {
-    let lin = [
-        space.transfer.to_linear(rgb[0]),
-        space.transfer.to_linear(rgb[1]),
-        space.transfer.to_linear(rgb[2]),
-    ];
+    linear_to_lab(
+        [
+            space.transfer.to_linear(rgb[0]),
+            space.transfer.to_linear(rgb[1]),
+            space.transfer.to_linear(rgb[2]),
+        ],
+        space,
+    )
+}
+
+/// Linear RGB in `space` -> CIE L*a*b*, for measurement only.
+///
+/// The gamut policies in `gamut.rs` work in linear destination RGB and have to be
+/// measured there — encoding first would fold the transfer curve's own clamping into
+/// a number that is supposed to be about the gamut. Deliberately *not* clamped: a
+/// channel outside [0,1] has a perfectly good Lab coordinate, and losing it here
+/// would make an out-of-gamut colour indistinguishable from its own clipped version
+/// inside the very comparison that exists to tell them apart.
+pub fn linear_to_lab(lin: [f32; 3], space: &Space) -> [f64; 3] {
     let m = space.to_xyz();
     let xyz = [
         m.0[0][0] * lin[0] as f64 + m.0[0][1] * lin[1] as f64 + m.0[0][2] * lin[2] as f64,

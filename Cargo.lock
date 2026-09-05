@@ -726,6 +726,7 @@ dependencies = [
  "bytemuck",
  "half",
  "naga",
+ "photodesk-color",
  "pollster",
  "wgpu",
 ]

@@ -100,3 +100,11 @@ pub fn to_glsl_es300(
 
 /// The shader under test: §5 stages 2–9 fused into one pass.
 pub const ADJUST_WGSL: &str = include_str!("../shaders/adjust.wgsl");
+
+/// §5 stage 13 — the output encode, with §16 #11's gamut policy in it.
+///
+/// A separate source from [`ADJUST_WGSL`] because it is a separate pass, not a
+/// separate *path*: stage 13 runs once at the end of the chain while stages 2–12 run
+/// once per layer (§5), and §0's one-shader-source invariant is about preview and
+/// export sharing a source, not about the whole pipeline being one file.
+pub const ENCODE_WGSL: &str = include_str!("../shaders/encode.wgsl");

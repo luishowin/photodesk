@@ -1,6 +1,6 @@
 # PhotoDesk — Architecture Specification
 
-**Version:** 0.11
+**Version:** 0.12
 **Author:** Luis Howin
 **Platform:** Fedora Workstation / GNOME
 **Status:** Master spec for the coding agent. **Phase 0 complete.**
@@ -47,7 +47,9 @@ This table is the contract. Anything not listed is undecided and needs a decisio
 | **ICC extraction from real containers** | **FROZEN** | Measured (§2.2, `tests/color/tests/heif_icc.rs`): a Display P3 ICC survives a real HEIF container byte-identical, parses back to P3's red primary at X 0.5151 rather than sRGB's 0.4361, and drives the transform to max ΔE 0.41 — where ignoring it costs 3.43, so the test can tell the two apart. |
 | **HEVC decode needs `libheif-freeworld`** | **FROZEN as a platform fact** | Fedora's stock libheif ships no HEVC codec at all (patent policy) — measured, not assumed. Installed here, and asserted by `tests/color/tests/heif_codecs.rs` so a mis-provisioned machine says so rather than failing to open a photograph. Consequences for §13 packaging below. |
 | **HEIC sources carry a ~0.9 ΔE conversion floor** | **FROZEN as a format fact** | libheif converts RGB↔YCbCr around every YCbCr codec. Measured identical to four decimals across libaom and x265, both asked for lossless — so it is the conversion, not compression. Apple ships YCbCr, so it is unavoidable on read. §12.1's HEIC thresholds must sit above it. |
-| **Export gamut-mapping policy** | PROVISIONAL | → before v0.1 exports (§4). §4 never named one; the Spike B harness uses clip-in-linear, which is a choice currently made in a test rather than in the spec. |
+| **Export gamut mapping = clip chroma at constant luminance** | **FROZEN** | Measured (§4, `tests/color/tests/gamut_policy.rs`). The clip's error has no policy — how much lightness a colour loses depends on which channel ran out first, up to 2.8 L\*. This one's error is *stated*: L\* is exact by construction, chroma is what gets spent. On a real photograph it halves the adjacent pixel pairs that merge into one colour, for zero cost inside the gamut and the same handful of ALU ops. |
+| **Stage 13 runs the gamut map in the fragment shader** | **FROZEN** | Corollary of "one shader source, preview and export": the preview gamut-maps every frame to the display, so a policy that needs a per-pixel search is not adoptable whatever its colorimetry. Checked, not assumed — `shaders/encode.wgsl` lowers to GLSL ES 3.00 and agrees with the Rust reference to one colour-attachment step (`tests/renderer/tests/encode_stage.rs`). |
+| **RGBA16F colour attachments may truncate rather than round** | **FROZEN as a platform fact** | Measured on RADV/RENOIR: 48,020 of 49,152 stored channels are bit-exactly the reference *truncated toward zero*, not rounded to nearest. It is the driver's rounding mode, not the shader's arithmetic, so §12.1's thresholds have to allow one attachment step or a correct render fails the suite (§16 #15). |
 | **No front-end framework: TypeScript + Vite, zero runtime dependencies** | **FROZEN** | The canvas needs none (Spike C), and §10/§11 specify the interaction surface closely enough that a component library would be overridden rather than used. Cost accepted knowingly: panels, undo and the keymap are hand-written, and the bill arrives at v0.2–v0.7, not v0.1. |
 
 ---
@@ -190,7 +192,31 @@ An iPhone HEIC is HEVC. So **the application's native subject does not open on a
 
 **Working space: linear Display P3, f16. FROZEN** by Spike B (§2.2, `SPIKE-B.md`) — measured at ΔE 0.0956 max through a thirty-pass chain, against a ΔE 1.0 budget.
 
-**Not frozen: the export gamut-mapping policy.** This section says "linear P3 → tone encode → sRGB" and stops, and a P3 source exported to sRGB produces negative channels for everything outside the smaller gamut. Something has to decide what happens to them. Spike B's harness uses clip-per-channel in linear light and agrees with lcms2 at relative colorimetric to mean ΔE 0.08 — defensible, but currently a choice made in a test rather than here. Decide it before v0.1 exports.
+**Export gamut mapping: clip chroma at constant luminance. FROZEN** 2026-09-06 (`tests/color/tests/gamut_policy.rs`, `tests/color/src/gamut.rs`).
+
+A Display P3 photograph exported to sRGB produces channels outside [0,1] for everything the smaller gamut cannot hold, and something has to decide what happens to them. Until now that something was one `clamp` in a test harness.
+
+**There is no off-the-shelf answer to defer to.** Perceptual rendering lives in a profile's B2A lookup tables, and neither sRGB nor Display P3 has any — they are matrix/TRC profiles. lcms2 returns the same transform to **ΔE 0.000000** whether asked for perceptual, saturation or relative colorimetric. Asking a colour engine for "perceptual" here returns the clip under a different name.
+
+**And ΔE cannot choose between the candidates**, which is worth saying out loud because it is the measurement anyone reaches for first. Clamping each channel to [0,1] is exactly the Euclidean projection onto the gamut cube — so the clip *is* the nearest in-gamut colour, in linear RGB, a space nobody perceives in. The perceptually nearest colour, found by search, scores better still (mean ΔE 3.09 against the clip's 3.32) and is not shippable, because it is a per-pixel search. Both leave **81 of 81** out-of-gamut samples *on* the gamut surface, because minimising a distance is projecting to the surface whatever the distance is. The lowest ΔE and the flattest gradient are the same answer.
+
+So the policy was chosen on what the error is made of rather than on how large it is:
+
+| | clip each channel | **constant-luminance chroma clip** | the same, plus a soft knee at 0.95 |
+|---|---|---|---|
+| ΔL\* on out-of-gamut colour | up to **2.82** | **0.000** | **0.000** |
+| ΔH, metric, same corpus | **10.73** | 25.36 | 25.57 |
+| in-gamut colour | untouched | untouched | up to ΔE 1.01, over 3.2% of the frame |
+| worst boundary ramp | **28 of 33 codes**, one step at ΔE 0.0000 | 33 of 33 | 33 of 33 |
+| adjacent pairs merged, real photograph | **75** of 60,304 | **39** | 29 |
+
+The chosen policy slides the colour along the ray from the achromatic point *of its own luminance* until it sits exactly on the gamut boundary. The vector it scales carries zero luminance by construction, so L\* comes through exact rather than nearly-exact and chroma is the only thing spent. That is the whole argument for it: **the clip's error has no policy.** How much lightness a colour loses depends on which channel happened to run out first, and a WYSIWYG editor cannot tell the user what became of their colour if the answer is "it depends".
+
+**The cost, stated so it is not a surprise later.** On extreme saturation this policy moves hue and chroma *more* than the clip does — ΔH 25.4 against 10.7, on a corpus that contains the P3 primaries themselves. That corpus is hostile by design and no camera produces those colours; on a real photograph the gap is 0.13 ΔE of mean movement. It is nonetheless the direction this policy is weakest in, and a golden image showing a saturated red drift toward pink is the signal to reopen it.
+
+**Why not the soft knee.** It is measurably the best at keeping gradients — 29 merged pairs against 39 — and it is rejected anyway. It buys those ten pairs by moving **3.23% of the frame that was already correct**, at up to ΔE 1.01, on the strength of a knee constant with no derivation behind it. §0's rule applies literally: a number that cannot be justified in a sentence is not frozen, it is a habit. The variant is implemented and measured (`GamutPolicy::CompressLuma`, with a knee sweep from 0.60 to 0.98) so reopening it is a one-line change rather than a fresh investigation.
+
+**It runs where §0 requires it to run.** Stage 13 is the only stage every pixel of *both* paths goes through, so a policy that cannot be expressed in a fragment shader is not adoptable here whatever its colorimetry — which is the shape of the finding that killed the fork, asked in advance this time. `shaders/encode.wgsl` implements it, lowers to GLSL ES 3.00, and run through wgpu agrees with the Rust reference to **one colour-attachment step**: bit-exactly the reference truncated to f16 on 48,020 of 49,152 channels. A matrix multiply, a dot product, three divides and a min. No loop, no table, no search.
 
 **Why not Rec.2020:** a container for a gamut this app will never receive on a display that can't show it. Sources are P3 and sRGB; outputs are P3 and sRGB. Rec.2020 spends precision on empty space and adds two matrix transforms per image for nothing.
 
@@ -220,7 +246,7 @@ Default export is sRGB, because that's what survives contact with the internet.
 
 Three things follow that were assumptions this morning. The manufacturer really does tag P3, in both containers, with the same profile — so §1's "take the manufacturer's rendering as the starting point" has something concrete to read. The base image is **8-bit**, which is what makes Spike B's f16 headroom argument apply to real material rather than only to synthetic ramps. And a real photograph survives the working space exactly: not ΔE 0.03, but 0.0000 across the sampled grid.
 
-**The one number that moved is the export.** The same pixels taken to sRGB shift by **max ΔE 2.86, mean 0.29** — not an error, but real P3 content being gamut-mapped, and visible at the top end. §16 #11 (the gamut-mapping policy this section never named) is therefore not an abstract tidiness item: it is worth up to three ΔE on the user's own photographs, and the harness currently decides it in a test file.
+**The one number that moved is the export.** The same pixels taken to sRGB shift by **max ΔE 2.86, mean 0.29** — not an error, but real P3 content being gamut-mapped, and visible at the top end. That measurement is what turned §16 #11 from a tidiness item into a decision worth up to three ΔE on the user's own photographs, and it is the reason the policy above is now named here rather than in a test file. *Measured under clip-in-linear, which was the policy at the time; the figure moves when the corpus is next available.*
 
 **HDR gain maps — v1 ignores them, and says so out loud.** A modern iPhone HEIC ships an SDR base image plus an ISO gain map that Photos.app applies on an HDR display. PhotoDesk v1 decodes the SDR base and discards the gain map. The reason it has to be *written down* rather than merely implemented: §1's thesis is to take the manufacturer's rendering as the starting point, and on an HDR display the manufacturer's rendering *is* the gain-mapped one — so an unstated drop means the app opens a photo looking flatter than the Photos.app the user just came from, and they conclude the colour pipeline is broken. It isn't; it's this decision. It is the right decision for v1 anyway, because the target display (§4) is a 60–70% sRGB laptop IPS that cannot show the difference. **Exit condition:** an HDR-capable display, or the first time a gain-mapped export is actually wanted. `image-hdr` is already in RapidRAW's dependency tree if that day comes.
 
@@ -713,6 +739,8 @@ photodesk/
 ├── tests/
 │   ├── golden/                 ← corpus + blessed references
 │   ├── color/                  ← Spike B harness, kept as a permanent suite
+│   ├── renderer/               ← Spike C harness, likewise. Holds the WGSL↔reference
+│   │                             agreement §12.2 inherits, and stage 13's (§16 #11)
 │   └── fixtures/migrations/
 ├── docs/{ARCHITECTURE,FORK-AUDIT,PIPELINE,DOCUMENT,DECISIONS}.md
 └── packaging/rpm/
@@ -772,10 +800,11 @@ The second is the one that matches §9.4's existing posture — a missing capabi
 | ~~1~~ | ~~Fork or build from scratch~~ | **Closed 2026-09-05 — build. `FORK-AUDIT.md`** |
 | ~~2~~ | ~~Working space and precision~~ | **Closed 2026-09-05 — linear Display P3 f16. `SPIKE-B.md`** |
 | ~~3~~ | ~~Preview renderer path~~ | **Closed 2026-09-05 — WebGL2 + naga transpilation. `SPIKE-C.md`** |
-| 11 | Export gamut-mapping policy | Before v0.1 exports (§4) |
+| ~~11~~ | ~~Export gamut-mapping policy~~ | **Closed 2026-09-06 — clip chroma at constant luminance. §4, `tests/color/tests/gamut_policy.rs`** |
 | ~~12~~ | ~~ICC extraction from real containers~~ | **Closed 2026-09-06 — proven against a real container. `tests/color/tests/heif_icc.rs`** |
 | 13 | How the RPM handles HEVC — hard `Requires`, `Recommends` + runtime detection, or bundling | Before v0.7 packaging (§13); affects v0.1's decode error path now |
 | 14 | Golden-image thresholds for HEIC sources, which must clear the ~0.9 ΔE YCbCr floor (§3) | Before the first `--bless` (§12.1) |
+| 15 | Golden-image thresholds must also allow one colour-attachment step: an RGBA16F attachment can truncate toward zero rather than round (§0 register), which is a full-step bias on every stored channel and not the shader's doing | Before the first `--bless` (§12.1); same conversation as #14 |
 | 4 | Pipeline v1 ordering | Golden-image validation |
 | 5 | Pre-1.0 vs post-1.0 reorder policy | Before v0.2 (§5) |
 | 6 | Remote AI endpoint: self-hosted ComfyUI or gateway | Before v0.5 |

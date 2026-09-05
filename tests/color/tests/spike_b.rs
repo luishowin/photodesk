@@ -15,7 +15,7 @@ use photodesk_color::corpus::{
     self, COLORCHECKER_SRGB, deep_shadow_ramp, untagged_screenshot, wide_gamut_gradient,
 };
 use photodesk_color::delta_e::{DeltaStats, ciede2000};
-use photodesk_color::working::{Pipeline, Precision, quantise_u8};
+use photodesk_color::working::{GamutPolicy, Pipeline, Precision, quantise_u8};
 
 /// Passes through the working buffer for the general-purpose tests: one layer's worth
 /// per §7.3 (stages 2–9 fused into one pass, plus the three spatial stages).
@@ -207,9 +207,21 @@ fn test_1_round_trip_identity() {
 
 /// §2.2 test 2 — Display P3 source exported to sRGB, against an independent reference
 /// converter. Threshold: mean ΔE < 1.5. Catches gamut mapping errors.
+///
+/// **Pinned to the clip, and the pin is load-bearing.** `reference_convert` clamps in
+/// linear f64, so it *is* clip-in-linear; running the pipeline under any other policy
+/// makes this test measure the difference between two gamut policies rather than the
+/// fidelity of the transform it was written to check. That is not hypothetical — when
+/// §16 #11 froze `PreserveLuma` (2026-09-06) this test's overall mean went from 0.0807
+/// to 1.4183 against its own 1.5 threshold, and stayed green while measuring something
+/// else entirely. The policy is chosen in `gamut_policy.rs`, on a corpus and against
+/// criteria built for it; here the neutral choice is the one the reference makes.
 #[test]
 fn test_2_p3_to_srgb_against_reference() {
-    let pipeline = Pipeline::new(Precision::F16, LAYER_PASSES);
+    let pipeline = Pipeline {
+        gamut: GamutPolicy::ClipLinear,
+        ..Pipeline::new(Precision::F16, LAYER_PASSES)
+    };
 
     let mut all = Vec::new();
     let p3_checker: Vec<[u8; 3]> = corpus::colorchecker_display_p3()
@@ -463,11 +475,18 @@ fn divergence(pipeline: &Pipeline, codes: &[[u8; 3]], space: &Space) -> Vec<f64>
         .collect()
 }
 
-/// The two corpus items that need `libheif-devel`, reported rather than silently absent.
+/// Corpus items that cannot be built here, reported rather than silently absent.
+///
+/// Green *and* empty since 2026-09-06, which is the outcome it was written to reach:
+/// the two items that needed `libheif-devel` and a real photograph are both exercised
+/// now. Kept because the next blocked item should announce itself in a test run rather
+/// than wait to be remembered.
 #[test]
 fn blocked_corpus_items_are_declared() {
+    if corpus::BLOCKED.is_empty() {
+        println!("no corpus item is blocked — §2.2's corpus is complete");
+    }
     for item in corpus::BLOCKED {
         println!("BLOCKED  {}\n         needs: {}\n         {}", item.item, item.needs, item.why_it_matters);
     }
-    assert_eq!(corpus::BLOCKED.len(), 2);
 }
