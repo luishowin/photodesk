@@ -226,3 +226,59 @@ Three items, all in the §0 register, none of them a spike:
 - **`Export gamut-mapping policy`** — §4 says "linear P3 → tone encode → sRGB" and stops. The Spike B harness clips per channel in linear light and agrees with lcms2 at relative colorimetric to mean ΔE 0.08. Defensible, and currently decided in a test file rather than in the specification. Due before v0.1 exports anything.
 - **`ICC extraction from real containers`** — `libheif-devel` is installed now, so the two blocked §2.2 corpus items are buildable. They are the only tests that would catch reading the *wrong* profile rather than applying the right one incorrectly.
 - **webkit2gtk-4.1 confirmation** — Spike C measured in webkitgtk-6.0 via Epiphany; Tauri v2 binds 4.1. Same WebKit 2.52.5, shared WebGL implementation, unconfirmed. Belongs to the first v0.1 build rather than to a spike.
+
+---
+
+## 2026-09-06 — first real container; a platform blocker found; spec v0.8 → v0.9
+
+`libheif-devel` was installed, which unblocked §2.2's outstanding corpus items. Building them answered one register question and opened a larger one.
+
+### Resolved
+
+**`ICC extraction from real containers` → FROZEN.** `tests/color/tests/heif_icc.rs`.
+
+The container is built by the test rather than committed as a fixture — a binary is opaque, needs git-lfs (§12.1), and cannot say what it contains. lcms2 writes a 584-byte Display P3 ICC; the test attaches it to a HEIF image of the 24 ColorChecker patches re-encoded as P3, writes the container, then reopens it as an opaque file.
+
+```
+recovered ICC ............ 584 bytes, byte-identical, type 'prof'
+red colorant XYZ ......... (0.5151, 0.2412, -0.0011)      P3, not sRGB's 0.4361
+P3-tagged -> sRGB ........ max ΔE 0.4055   mean 0.0423
+same file, profile ignored max ΔE 3.4332   mean 1.8369
+```
+
+Three assertions rather than one, because a container can round-trip bytes while the app still fails to act on them: the ICC comes back identical, it *parses* and describes P3's primaries rather than sRGB's, and driving the transform from it lands inside ΔE 1.5. The fourth number is the counterexample — ignoring the profile costs 3.43, comfortably above the threshold the test applies, so a green result distinguishes reading the tag from ignoring it. That is the exact failure Spike A found RapidRAW committing on every P3 file it opens.
+
+**Encoded `uncompressed`, deliberately.** Any codec loss would land in the ΔE and be indistinguishable from a profile error, which is the one thing this test must not confuse.
+
+### The larger finding
+
+**`HEVC decode needs libheif-freeworld` → FROZEN as a platform fact.**
+
+Enumerating libheif's codecs rather than assuming them (`tests/color/tests/heif_codecs.rs`) returned:
+
+```
+HEVC (iPhone HEIC)     decoders: —                        encoders: —
+AV1 (AVIF)             dav1d v7.0.0, libaom v3.13.3       libaom, SVT-AV1, rav1e
+AVC (H.264)            OpenH264 2.6.0                     —
+JPEG                   libjpeg-turbo 3.1.2                libjpeg-turbo
+JPEG 2000              OpenJPEG 2.5.4                     OpenJPEG
+uncompressed           builtin                            builtin
+```
+
+**Fedora's libheif has no HEVC codec at all**, in either direction. It is a licensing decision rather than an oversight — HEVC is patent-encumbered and Fedora will not ship it — and RPM Fusion's `libheif-freeworld` supplies it. Confirmed at the library level: `libheif.so.1` links libaom, SVT-AV1, libjpeg and openh264, and neither libde265 nor x265, with no plugin directory.
+
+An iPhone HEIC is HEVC. So **§1's native subject and the whole of §14's v0.1 do not open on a stock Fedora install.**
+
+This is exactly the class of thing §2 exists to surface early: cheap to find now, and a week of confused debugging in month two. It cost one enumeration.
+
+### Consequences written into the spec
+
+§3 gains the fact, next to where formats are discussed. §13 gains the part that actually bites: **PhotoDesk's RPM cannot satisfy its own most important dependency**, because a Fedora package may not require a third-party repository. Three options are recorded there — a hard `Requires` that refuses to install, a `Recommends` plus runtime detection, or bundling an encumbered codec. The second matches §9.4's existing posture, where a missing capability greys out with a reason and nothing else changes, and it is the only one where the application is still useful on a stock install. Opened as §16 #13, due before v0.7 packaging — but noted now, because **v0.1's decode path has to return a distinguishable "no codec" error rather than a generic failure**, and that is cheaper to build in than to retrofit.
+
+### Still blocked
+
+**The HDR gain-map corpus item.** It needs both the HEVC codec and a real iPhone HEIC; neither is present. `v1 discards iPhone HDR gain maps` stays PROVISIONAL with its existing exit (§4) — the register entry was always about the *decision*, and what remains missing is the test that the SDR base decodes correctly while the gain map is ignored rather than misapplied.
+
+### On the dependency
+
+`libheif-rs` 3.x requires libheif ≥ 1.23; Fedora ships 1.21.2. Pinned to `libheif-rs` 2.7, which builds and runs against it. Worth knowing that this binding tracks upstream libheif closely and Fedora will lag it, so the pin is load-bearing rather than incidental.

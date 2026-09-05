@@ -17,7 +17,7 @@ When something moves between states, append to `docs/DECISIONS.md` — what move
 
 ## Current state
 
-v0.0, **Phase 0 complete**. Spec is at v0.8. All three spikes have run and two of the three answers were not the expected ones.
+v0.0, **Phase 0 complete**. Spec is at v0.9. All three spikes have run and two of the three answers were not the expected ones.
 
 **Spike A** (2026-09-05) audited RapidRAW 1.6.3 and returned *do not fork*. Read `docs/FORK-AUDIT.md` before revisiting anything about the render path. Short version: the per-pixel chain is one `@compute` kernel in which stage order is the literal statement order, and vendored shaders are read-only, so the frozen "pipeline order is explicit and versioned" was unimplementable in a fork. Separately, RapidRAW has no colour management at all, cannot open HEIF, and on Linux ships every preview frame as a lossy JPEG over IPC.
 
@@ -25,7 +25,9 @@ v0.0, **Phase 0 complete**. Spec is at v0.8. All three spikes have run and two o
 
 **Spike C** (2026-09-05) is green, and reversed Spike A's apparent verdict on §7.2. `docs/SPIKE-C.md`, harness at `tests/renderer/`. Authored fragment-first, the WGSL lowers to GLSL ES 3.00, WebKitGTK compiles it, six layers cost 5.92 ms at 2 MP against 16 ms, and the WebGL2 and wgpu paths agree to max 0.0088 across 196,608 samples. `EXT_color_buffer_float` is present with RGBA16F colour-renderable and linear-filterable, which retires the risk that B and C could each be green and jointly wrong.
 
-**v0.1 is unblocked.** Three things come first, none of them a spike: name §4's export gamut-mapping policy, finish the two §2.2 corpus items now that `libheif-devel` is installed, and confirm webkit2gtk-4.1 behaves like the webkitgtk-6.0 Spike C measured in.
+**v0.1 is unblocked, with one platform blocker.** Fedora's stock libheif has **no HEVC codec at all** (patent policy, measured not assumed), and an iPhone HEIC is HEVC — so §1's native subject does not open here until `sudo dnf install libheif-freeworld`. RPM Fusion is already enabled. This also lands on §13: a Fedora RPM may not require a third-party repo, so the packaging question is open as §16 #13 and v0.1's decode path should return a distinguishable "no codec" error rather than a generic failure.
+
+Two other things come first, neither a spike: name §4's export gamut-mapping policy, and confirm webkit2gtk-4.1 behaves like the webkitgtk-6.0 Spike C measured in.
 
 **The front end has no framework** (2026-09-06, §10.3): TypeScript and Vite, zero runtime dependencies. Don't add React or a component library to make a panel easier — §11's slider contract is the reason the decision went this way, and a library's slider would be overridden rather than used. Panels, undo, focus and the keymap are hand-written by design.
 
@@ -48,4 +50,6 @@ Listed at the end of `docs/REVIEW-2026-09-05.md`. Status of the three:
 - **§10.1 clipping warnings** — still live, and Spike A gave it a data point: RapidRAW paints clipped pixels pure red and pure blue directly on the photograph, replacing the pixel entirely. Worth looking at before deciding, since it is the maximal version of the thing §10.1 objects to elsewhere.
 - **`providers/` as a Cargo workspace member** — the workspace now exists (root `Cargo.toml`, members `tests/color` and `tests/renderer`). Still unstated for `providers/`, and now cheap to settle by precedent.
 
-Two live in the register: **§4's export gamut-mapping policy** (the harness uses clip-in-linear, a choice currently made in a test file), and **ICC extraction from real containers** (`libheif-devel` is now installed, so the two blocked §2.2 corpus items are buildable).
+Two live in the register: **§4's export gamut-mapping policy** (the harness uses clip-in-linear, a choice currently made in a test file), and **how the RPM handles HEVC** (§16 #13 — it cannot require RPM Fusion, so it is `Recommends` plus runtime detection or nothing).
+
+`libheif-rs` is pinned to **2.7**, not 3.x: 3.x requires libheif ≥ 1.23 and Fedora ships 1.21.2. That pin is load-bearing — the binding tracks upstream closely and Fedora will lag it.

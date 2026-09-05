@@ -12,3 +12,4 @@ half.workspace = true
 
 [dev-dependencies]
 lcms2.workspace = true
+libheif-rs.workspace = true
