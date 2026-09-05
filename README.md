@@ -62,6 +62,16 @@ Two rules follow, and the project is held to both. **Every frozen item carries a
 
 **Spike C — preview renderer.** Establish whether one shader source can drive both preview and export on this platform. Scouting has already found that RapidRAW's chain is compute-based, and WebGL2 has no compute shaders, no storage textures and no storage buffers — so the hand-written-GLSL fallback is the expected outcome rather than a contingency.
 
+## Picking up
+
+The next action is **Spike A**, and it does not need a toolchain — it is a source audit of RapidRAW 1.6.3, already unpacked at `~/Downloads/RapidRAW-main`. Classify the subsystems listed in §2.1, fill in the table, and record the gate as explicitly passed or failed. Deliverable: `docs/FORK-AUDIT.md`.
+
+Part of that audit is already done and written into §2.1 — coupling measurements, the edit-state target, and the finding that the shader chain is compute end to end. Start from that table rather than from zero.
+
+**Local environment, as of 2026-09-05.** Present: Rust 1.98, `lcms2-devel`, `libheif` runtime, `gh` 2.97. Absent and needed later: `libheif-devel` (Spike B), Node and npm (any Tauri front end — RapidRAW is React + Vite), and `webkit2gtk4.1-devel` / `gtk3-devel` / `librsvg2-devel` / `openssl-devel` (Tauri itself). The GPU is an AMD Cezanne Vega iGPU, which makes ROCm doubtful for §9.1's `LocalGpu` — Vulkan compute is the realistic path.
+
+**Spike B is deliberately buildable now**, independently of Spike A's outcome, because it only needs `libheif` and `lcms2`. If Spike A stalls, that is the thing to build instead of waiting.
+
 ## Roadmap
 
 | Version | Scope | Estimate |
