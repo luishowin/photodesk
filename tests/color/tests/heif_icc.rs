@@ -84,18 +84,32 @@ fn writable_formats() -> Vec<(&'static str, CompressionFormat)> {
 #[test]
 fn icc_survives_a_real_container_and_selects_the_right_transform() {
     let lh = LibHeif::new();
-    let icc = display_p3_icc();
-    println!("Display P3 ICC built by lcms2: {} bytes", icc.len());
-
     let formats = writable_formats();
     assert!(
         !formats.is_empty(),
         "libheif {:?} can encode nothing — the corpus cannot be built here",
         lh.version()
     );
-    let (label, format) = formats[0];
-    println!("container: {label}");
+    println!("containers available here: {:?}", formats.iter().map(|f| f.0).collect::<Vec<_>>());
 
+    // HEVC is the one §1 actually depends on, so its absence is a skip worth shouting
+    // about rather than a quietly shorter loop.
+    let has_hevc = formats.iter().any(|(_, f)| matches!(f, CompressionFormat::Hevc));
+    if !has_hevc {
+        println!(
+            "NOTE: no HEVC encoder — the iPhone HEIC path is untested here. \
+             Fedora ships libheif without HEVC; RPM Fusion's libheif-freeworld supplies it."
+        );
+    }
+
+    for (label, format) in &formats {
+        println!("\n=== container: {label} ===");
+        run_container_case(&lh, *label, *format);
+    }
+}
+
+fn run_container_case(lh: &LibHeif, label: &str, format: CompressionFormat) {
+    let icc = display_p3_icc();
     let (patches, rgb) = chart_p3();
 
     // --- build the container ------------------------------------------------
@@ -116,7 +130,8 @@ fn icc_survives_a_real_container_and_selects_the_right_transform() {
 
     let mut ctx = HeifContext::new().expect("context");
     let mut encoder = lh.encoder_for_format(format).expect("encoder");
-    let _ = encoder.set_quality(EncoderQuality::LossLess);
+    let lossless = encoder.set_quality(EncoderQuality::LossLess).is_ok();
+    println!("encoder: {} (lossless: {lossless})", encoder.name());
     ctx.encode_image(&img, &mut encoder, None).expect("encode");
     let bytes = ctx.write_to_bytes().expect("serialise container");
     println!("encoded {} bytes", bytes.len());
@@ -160,17 +175,23 @@ fn icc_survives_a_real_container_and_selects_the_right_transform() {
 
     let pipeline = Pipeline::new(Precision::F16, 5);
     let mut deltas = Vec::new();
+    let mut codec_loss = Vec::new();
     for (i, want) in patches.iter().enumerate() {
         // Sample the middle of each patch, away from any block boundary.
         let px = (i as u32 % COLS) * PATCH + PATCH / 2;
         let py = (i as u32 / COLS) * PATCH + PATCH / 2;
         let o = py as usize * plane.stride + (px * 3) as usize;
         let got = [plane.data[o], plane.data[o + 1], plane.data[o + 2]];
-        assert_eq!(
-            got, *want,
-            "patch {i} decoded to {got:?}, expected {want:?} — the container is lossy, \
-             so any colour difference below would be codec loss rather than profile handling"
-        );
+
+        // What the codec itself cost, measured rather than assumed away. HEVC encodes
+        // YCbCr and may subsample chroma, so an exact-match assertion would be wrong
+        // for the one container §1 actually cares about — but leaving codec loss
+        // unmeasured would let it hide inside the profile result below.
+        let ga = encoded_to_lab(
+            [got[0] as f32 / 255.0, got[1] as f32 / 255.0, got[2] as f32 / 255.0], &DISPLAY_P3);
+        let gb = encoded_to_lab(
+            [want[0] as f32 / 255.0, want[1] as f32 / 255.0, want[2] as f32 / 255.0], &DISPLAY_P3);
+        codec_loss.push(ciede2000(ga, gb));
 
         // The point of the whole test: interpret the file through the profile it
         // carries, export to sRGB, and check it matches the sRGB we started from.
@@ -184,9 +205,25 @@ fn icc_survives_a_real_container_and_selects_the_right_transform() {
         deltas.push(ciede2000(a, b));
     }
 
+    let loss = DeltaStats::from(&codec_loss);
+    println!("codec loss, decoded vs encoded pixels: {loss}");
+    // Both AV1 and HEVC report *identical* loss here to four decimal places, from two
+    // entirely different encoders (libaom and x265) both asked for lossless. That is
+    // not compression: it is the RGB->YCbCr->RGB conversion libheif performs around
+    // every YCbCr codec. Only the uncompressed container avoids it, and Apple does not
+    // ship uncompressed — so a real iPhone HEIC carries this floor before PhotoDesk
+    // sees a pixel, and §12.1's golden thresholds for HEIC sources have to sit above it.
+
     let stats = DeltaStats::from(&deltas);
     println!("P3-tagged container -> sRGB export vs the original sRGB patches: {stats}");
-    assert!(stats.max < 1.5, "round trip through a tagged container exceeded ΔE 1.5: {stats}");
+
+    // The profile result has to stay inside the threshold *after* whatever the codec
+    // cost, so a lossy container is held to the same standard rather than a softer one.
+    assert!(
+        stats.max < 1.5,
+        "{label}: round trip through a tagged container exceeded ΔE 1.5: {stats} \
+         (codec loss alone was {loss})"
+    );
 
     // The counterexample. If the profile were ignored and the file read as sRGB, the
     // error has to be large enough that the assertion above would have caught it —
@@ -209,7 +246,7 @@ fn icc_survives_a_real_container_and_selects_the_right_transform() {
     println!("same file with the profile ignored (RapidRAW's behaviour): {ignored_stats}");
     assert!(
         ignored_stats.max > 1.5,
-        "ignoring the profile costs only {ignored_stats}, which would pass the assertion \
-         above — so this test cannot tell reading the tag from ignoring it"
+        "{label}: ignoring the profile costs only {ignored_stats}, which would pass the \
+         assertion above — so this test cannot tell reading the tag from ignoring it"
     );
 }

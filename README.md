@@ -16,7 +16,7 @@ There is no application yet, and that is on purpose. The architecture spec commi
 
 | Phase | State |
 |---|---|
-| Spec | v0.9 — [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Spec | v0.10 — [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Spike A — RapidRAW fork audit | **complete — gate failed, no fork.** [`docs/FORK-AUDIT.md`](docs/FORK-AUDIT.md) |
 | Spike B — colour validation harness | **complete — green, working space frozen.** [`docs/SPIKE-B.md`](docs/SPIKE-B.md) |
 | Spike C — preview renderer | **complete — green, preview path frozen.** [`docs/SPIKE-C.md`](docs/SPIKE-C.md) |
@@ -75,10 +75,11 @@ A sixth followed on 2026-09-06: **no front-end framework** — TypeScript and Vi
 **Phase 0 is done and v0.1 is unblocked.** Four things stand between here and starting it, none of them a spike:
 
 1. **Name the export gamut-mapping policy.** §4 says "linear P3 → tone encode → sRGB" and stops. The Spike B harness clips per channel in linear light, which is defensible and currently decided in a test file rather than in the spec.
-2. **Install `libheif-freeworld`.** Fedora's stock libheif has **no HEVC codec at all** — a licensing decision, not an oversight — and an iPhone HEIC is HEVC. Without it, the application's native subject does not open. `sudo dnf install libheif-freeworld`; RPM Fusion is already enabled.
-3. **Confirm webkit2gtk-4.1.** Spike C ran in webkitgtk-6.0 via Epiphany. Tauri v2 binds webkit2gtk-4.1 — same WebKit 2.52.5, shared WebGL implementation, unconfirmed. It belongs to the first v0.1 build.
+2. **Confirm webkit2gtk-4.1.** Spike C ran in webkitgtk-6.0 via Epiphany. Tauri v2 binds webkit2gtk-4.1 — same WebKit 2.52.5, shared WebGL implementation, unconfirmed. It belongs to the first v0.1 build.
 
-ICC extraction from a real container is now proven: a Display P3 profile survives a HEIF container byte-identical, parses back to P3's red primary rather than sRGB's, and drives the transform to max ΔE 0.41 — where ignoring it costs 3.43, which is what RapidRAW does to every P3 file it opens.
+ICC extraction from a real container is proven across all three containers this machine can write — uncompressed, AVIF and **HEVC, the actual iPhone HEIC path**. The profile survives byte-identical, parses back to P3's red primary rather than sRGB's, and drives the transform to within ΔE 1.5 — where ignoring it costs 3.43, which is what RapidRAW does to every P3 file it opens.
+
+One fact came out of that with consequences: **a HEIC carries about ΔE 0.9 of RGB↔YCbCr conversion loss before PhotoDesk sees a pixel.** Measured identical to four decimals across libaom and x265, both asked for lossless, so it is the conversion rather than the compression — and Apple does not ship uncompressed. §12.1's golden thresholds for HEIC sources have to clear it.
 
 The front end is settled: **no framework**, TypeScript and Vite (§10.3).
 

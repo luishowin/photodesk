@@ -282,3 +282,35 @@ This is exactly the class of thing §2 exists to surface early: cheap to find no
 ### On the dependency
 
 `libheif-rs` 3.x requires libheif ≥ 1.23; Fedora ships 1.21.2. Pinned to `libheif-rs` 2.7, which builds and runs against it. Worth knowing that this binding tracks upstream libheif closely and Fedora will lag it, so the pin is load-bearing rather than incidental.
+
+---
+
+## 2026-09-06 — HEVC installed; the iPhone HEIC path tested; spec v0.9 → v0.10
+
+`libheif-freeworld` is installed. HEVC now enumerates as `libde265 1.0.18` and `FFMPEG AVC/HEVC 8.1.2` for decode, `x265 4.1` for encode, loaded as plugins from `/usr/lib64/libheif/` — the library itself still links neither, which is why the earlier `ldd` reading was correct and the codec list is the thing worth trusting.
+
+### Resolved
+
+**The iPhone HEIC path is tested.** `heif_icc.rs` now runs its whole case over **every container this machine can write** rather than the first one it finds — uncompressed, AVIF and HEVC. All three pass. The ICC comes back byte-identical from all three, parses to P3's red primary in all three, and the profile-honoured result stays inside ΔE 1.5 while the profile-ignored counterexample sits at 3.43.
+
+**The codec probe now asserts rather than reports.** A machine without HEVC cannot open §1's native subject, and nothing else in the application would say so clearly — an iPhone HEIC would simply fail. A red test is the cheapest possible way to say "this machine is not provisioned".
+
+### Measured, and it sets a floor
+
+**`HEIC sources carry a ~0.9 ΔE conversion floor` → FROZEN as a format fact.**
+
+```
+uncompressed   codec loss  max 0.0000  mean 0.0000
+AV1 (AVIF)     codec loss  max 0.9041  mean 0.2920
+HEVC (HEIC)    codec loss  max 0.9041  mean 0.2920
+```
+
+Two different codecs, two different implementations — libaom and x265 — both asked for lossless, returning **the same number to four decimal places**. That is not compression. It is the RGB↔YCbCr↔RGB conversion libheif performs around every YCbCr codec, and only the uncompressed container escapes it.
+
+Apple does not ship uncompressed. **So every HEIC PhotoDesk opens has already spent ΔE 0.9 before §4 sees a pixel**, and no care taken later buys it back. Recorded in §3 next to the codec fact, and opened as §16 #14: **§12.1's golden-image thresholds for HEIC sources have to clear this floor**, and that has to be settled before the first `--bless` rather than discovered as a suite that will not go green.
+
+Worth noticing what found this. The test measured codec loss separately from profile error instead of asserting exact pixels — which the earlier uncompressed-only version did, and which would have been a correct assertion for uncompressed and a wrong one for the container the product actually cares about. Separating the two turned a threshold that would have had to be loosened into a fact with a cause.
+
+### Still blocked
+
+**The HDR gain-map corpus item**, and now for only one reason. The codec is present; what is missing is a real iPhone HEIC — there are none on this machine. `v1 discards iPhone HDR gain maps` keeps its existing exit (§4); what remains untested is that the SDR base decodes correctly while the gain map is ignored rather than misapplied. One photograph off a modern iPhone closes it.

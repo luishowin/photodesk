@@ -49,14 +49,16 @@ fn report_available_heif_codecs() {
         );
     }
 
-    println!(
-        "\nHEVC decode available: {}  <- this is the one v0.1 depends on",
-        hevc_decode
+    println!("\nHEVC decode available: {hevc_decode}  <- the one v0.1 depends on");
+
+    // Asserted rather than reported, now that the requirement is documented (§3, §13).
+    // Fedora ships libheif without HEVC on patent grounds and it is not obvious from
+    // any error the app would otherwise produce: an iPhone HEIC simply fails to open.
+    // A red test here is the cheapest possible way to say "your machine is not set up".
+    assert!(
+        hevc_decode,
+        "no HEVC decoder: this machine cannot open an iPhone HEIC, which is §1's native \
+         subject and the whole of §14's v0.1. Fedora ships libheif without HEVC on \
+         patent grounds; install RPM Fusion's `libheif-freeworld`."
     );
-    if !hevc_decode {
-        println!(
-            "  If false, this machine cannot open an iPhone HEIC and §14's v0.1 needs \
-             a decoder installed (libde265) before it can be built, not after."
-        );
-    }
 }

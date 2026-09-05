@@ -17,7 +17,7 @@ When something moves between states, append to `docs/DECISIONS.md` — what move
 
 ## Current state
 
-v0.0, **Phase 0 complete**. Spec is at v0.9. All three spikes have run and two of the three answers were not the expected ones.
+v0.0, **Phase 0 complete**. Spec is at v0.10. All three spikes have run and two of the three answers were not the expected ones.
 
 **Spike A** (2026-09-05) audited RapidRAW 1.6.3 and returned *do not fork*. Read `docs/FORK-AUDIT.md` before revisiting anything about the render path. Short version: the per-pixel chain is one `@compute` kernel in which stage order is the literal statement order, and vendored shaders are read-only, so the frozen "pipeline order is explicit and versioned" was unimplementable in a fork. Separately, RapidRAW has no colour management at all, cannot open HEIF, and on Linux ships every preview frame as a lossy JPEG over IPC.
 
@@ -25,9 +25,11 @@ v0.0, **Phase 0 complete**. Spec is at v0.9. All three spikes have run and two o
 
 **Spike C** (2026-09-05) is green, and reversed Spike A's apparent verdict on §7.2. `docs/SPIKE-C.md`, harness at `tests/renderer/`. Authored fragment-first, the WGSL lowers to GLSL ES 3.00, WebKitGTK compiles it, six layers cost 5.92 ms at 2 MP against 16 ms, and the WebGL2 and wgpu paths agree to max 0.0088 across 196,608 samples. `EXT_color_buffer_float` is present with RGBA16F colour-renderable and linear-filterable, which retires the risk that B and C could each be green and jointly wrong.
 
-**v0.1 is unblocked, with one platform blocker.** Fedora's stock libheif has **no HEVC codec at all** (patent policy, measured not assumed), and an iPhone HEIC is HEVC — so §1's native subject does not open here until `sudo dnf install libheif-freeworld`. RPM Fusion is already enabled. This also lands on §13: a Fedora RPM may not require a third-party repo, so the packaging question is open as §16 #13 and v0.1's decode path should return a distinguishable "no codec" error rather than a generic failure.
+**v0.1 is unblocked.** The iPhone HEIC path is tested end to end — `libheif-freeworld` is installed and `heif_codecs.rs` now *asserts* HEVC, so a mis-provisioned machine says so rather than failing to open a photograph. Fedora ships libheif without HEVC on patent grounds; that lands on §13 as §16 #13, because a Fedora RPM may not require a third-party repo, and v0.1's decode path should return a distinguishable "no codec" error rather than a generic failure.
 
-Two other things come first, neither a spike: name §4's export gamut-mapping policy, and confirm webkit2gtk-4.1 behaves like the webkitgtk-6.0 Spike C measured in.
+**A HEIC costs ~0.9 ΔE before we see it** — RGB↔YCbCr conversion, identical across libaom and x265 at lossless, so it is inherent and unavoidable on read. §12.1's HEIC thresholds must clear it (§16 #14).
+
+Two things come first, neither a spike: name §4's export gamut-mapping policy, and confirm webkit2gtk-4.1 behaves like the webkitgtk-6.0 Spike C measured in.
 
 **The front end has no framework** (2026-09-06, §10.3): TypeScript and Vite, zero runtime dependencies. Don't add React or a component library to make a panel easier — §11's slider contract is the reason the decision went this way, and a library's slider would be overridden rather than used. Panels, undo, focus and the keymap are hand-written by design.
 
