@@ -35,6 +35,8 @@ Two things come first, neither a spike: name §4's export gamut-mapping policy �
 
 **The front end has no framework** (2026-09-06, §10.3): TypeScript and Vite, zero runtime dependencies. Don't add React or a component library to make a panel easier — §11's slider contract is the reason the decision went this way, and a library's slider would be overridden rather than used. Panels, undo, focus and the keymap are hand-written by design.
 
+**Where the work is.** All of Phase 0 sits on the branch **`spike-a-fork-audit`**, eight commits, nothing pushed — `main` is still at the pre-code commit and tracks `origin/main`. The branch name is left over from when it held only Spike A and is now misleading: it carries all three spikes, the front-end decision, the HEVC findings and the real-photo verification. Rename it or merge to `main` before pushing; don't assume `main` reflects any of this.
+
 ## Things that will bite
 
 - **Never vendor RapidRAW code.** The gate failed, so there is no fork and no reason to. It is AGPL-3.0 and this repository is public. `FORK-AUDIT.md` quotes identifiers and line numbers for audit purposes; that is the ceiling. The specification-only constraint has lifted, but it lifted *because* nothing is being copied — don't undo the premise.
