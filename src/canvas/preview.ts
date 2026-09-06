@@ -101,13 +101,18 @@ export class Preview {
     };
   }
 
-  /** Draw the document as it stands, and present it. Returns the frame time in ms. */
-  render(graph: Graph, view: View, split: number): number {
-    if (!this.source || !this.targets || !this.display) return 0;
-    const started = performance.now();
+  /**
+   * Draw the document as it stands, and present it.
+   *
+   * Returns nothing, deliberately. The obvious thing to return is how long it took, and
+   * that number would be CPU submit time — GL commands are asynchronous, so it reads
+   * near zero against a 16 ms budget and measures the wrong thing. What §7.3 budgets is
+   * the interval between frames, which only the caller running the loop can see.
+   */
+  render(graph: Graph, view: View, split: number): void {
+    if (!this.source || !this.targets || !this.display) return;
     const shown = execute(this.resources(this.display), graph);
     this.present(shown.output, shown.passes, view, split);
-    return performance.now() - started;
   }
 
   /** Fit the image into the canvas and blit, resolving the pass parity. */

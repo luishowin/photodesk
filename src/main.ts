@@ -49,7 +49,20 @@ let preview: Preview | null = null;
 let view: View = "edited";
 let splitAt = 0.5;
 let needsFrame = false;
-let lastFrameMs = 0;
+/**
+ * Frames per second while something is moving, which is how §7.3 states its requirement:
+ * "60 fps at proxy with up to 6 layers".
+ *
+ * A rate rather than a duration, and that is the second correction this readout has
+ * needed. The time `render` takes to return is CPU submit time — GL commands are
+ * asynchronous — so it reads 0.00 ms against a 16 ms budget: a confident number
+ * measuring the wrong thing. The interval between drawn frames is real, but the loop is
+ * `requestAnimationFrame`-driven, so it cannot go below the display's refresh interval
+ * and reads 17.0 ms against "budget 16.0 ms" while comfortably meeting it. The rate has
+ * neither problem: 60 is the ceiling, and anything below it is the signal.
+ */
+let fps = 0;
+let lastDrawnAt = 0;
 
 // -------------------------------------------------------------------- the chrome
 
@@ -171,7 +184,17 @@ function frame(): void {
   if (needsFrame && session && preview?.loaded) {
     needsFrame = false;
     try {
-      lastFrameMs = preview.render(session.graph, view, splitAt);
+      preview.render(session.graph, view, splitAt);
+      const now = performance.now();
+      // Only while frames are consecutive — two draws a second apart are not a frame
+      // rate, they are two separate edits. Smoothed, because a single late frame is
+      // noise and the number is being read while a hand is moving.
+      const gap = now - lastDrawnAt;
+      if (lastDrawnAt && gap < 200) {
+        const instant = 1000 / gap;
+        fps = fps === 0 ? instant : fps * 0.8 + instant * 0.2;
+      }
+      lastDrawnAt = now;
       paintStatus();
     } catch (e) {
       report(e);
@@ -379,7 +402,7 @@ function paintStatus(): void {
   const lines = [
     `${o.width}×${o.height}  ·  proxy ${o.proxyWidth}×${o.proxyHeight}`,
     `${o.sourceSpace}  ·  ${o.colourTag}  ·  ${o.bitDepth}-bit`,
-    `frame ${lastFrameMs.toFixed(2)} ms  ·  budget 16.00 ms`,
+    fps > 0 ? `${fps.toFixed(0)} fps  ·  §7.3 wants 60 at proxy` : "—  ·  §7.3 wants 60 at proxy",
   ];
   // §4 asks for the gain-map discard to be visible rather than assumed, and this is
   // where "says so out loud" lands in the product.
