@@ -17,7 +17,7 @@ Don't edit past DECISIONS entries.
 
 ## Current state
 
-**Spec v0.18. Phase 0 complete, v0.1 in progress.** 122 tests, no warnings, everything on `main` and pushed.
+**Spec v0.19. Phase 0 complete, v0.1 in progress.** 131 tests, everything on `main` and pushed. (`cargo test` prints two `failed to parse serde attribute` warnings from ts-rs; both are benign — the `ts(type = "string")` override already emits what they would have, and `deny_unknown_fields` has no TypeScript meaning.)
 
 Phase 0's three spikes ran on 2026-09-05 and two of the three answers were not the expected ones — Spike A's gate **failed** (no fork), B and C are green. Their reports are `docs/{FORK-AUDIT,SPIKE-B,SPIKE-C}.md`. Read `FORK-AUDIT.md` before revisiting anything about the render path.
 
@@ -27,7 +27,7 @@ v0.1's headless half is built. What remains is the part a person touches.
 |---|---|
 | Document model (§6.1, §6.3) | done — schema, validation, migration, sidecar IO |
 | Graph compile (§6.2) | done — Merkle-keyed DAG, dedup, dirty tracking |
-| Decode (§5 stage 0) | done — HEIF + JPEG → linear P3 f16, ICC classified |
+| Decode (§5 stage 0) | done — HEIF + JPEG + PNG → linear P3 f16, ICC classified |
 | Render (§7.2) | done — a compiled graph through wgpu, six sliders |
 | Export (§6.1's `output`) | done — JPEG + PNG, ICC-tagged, metadata policy |
 | **Front end** | **not started** — this is what's next |
@@ -39,9 +39,13 @@ v0.1's headless half is built. What remains is the part a person touches.
 
 **The front end.** Everything above is headless. §14's v0.1 is a photograph a person can open, drag six sliders on, compare against the original, and export — which means Tauri, the WebGL2 preview executing a compiled plan, and §11's slider contract hand-written (§10.3 froze: no framework, TypeScript + Vite, zero runtime dependencies).
 
-Tauri needs four devel packages this machine does not have: `webkit2gtk4.1-devel`, `gtk3-devel`, `librsvg2-devel`, `openssl-devel`.
+Tauri needs four devel packages this machine does not have, and installing them needs sudo:
 
-Also open and small: **§16 #17, PNG input** — §1 names a screenshot as a native subject and §4 gives it a colour rule, but v0.1 decodes HEIF and JPEG only, so that rule is exercised by an untagged JPEG rather than the file it was written for. One decoder against a colour path that already exists. Due before v0.1 ships; #18 (tiled export) and #19 (HEIF output) can wait.
+```
+sudo dnf install webkit2gtk4.1-devel gtk3-devel librsvg2-devel openssl-devel
+```
+
+**§16 #17 (PNG) is closed** — decode reads PNG, §1's screenshot is a subject the app can open, and export's `iCCP` finally has a reader. #18 (tiled export) and #19 (HEIF output) can wait; nothing else is open before v0.1 but the front end.
 
 ## Where the code is
 
@@ -87,16 +91,17 @@ This is the project's recurring shape, and it has now decided five things:
 - **Never author a compute shader, a storage buffer or a storage texture.** Frozen. naga refuses all three by name targeting GLSL ES 3.00, so one of them anywhere breaks the preview path for the whole project. `@fragment`, `var<uniform>`, sampled textures, `@location(0)` returns.
 - **There is no CPU renderer and there must not be one.** The obvious way to test a GPU renderer is to write the same maths in Rust and compare — precisely the drift §0 freezes against. The shaders are the only description of what a pixel goes through. The two constants hardcoded in `adjust.wgsl` (linear P3's luma weights and XYZ matrix) are the exception, and a test reads them out of the shader text and compares them against the derived values.
 - **`src/document/generated/{document,graph}.ts` are generated and committed.** Don't hand-edit them, and don't hand-write a second TypeScript description of either. `cargo test -p photodesk` regenerates and fails if they changed: change the Rust, run the tests once, commit both.
+- **There is one conversion path from a decoded buffer to the working space.** `to_working_space` takes a described `Surface` — stride, channels, depth — rather than a pointer, because three decoders hand back three shapes. Container features are flattened *before* it (palette, sub-byte depth, `tRNS` and Adam7 by the `png` crate; grey and 16-bit inside the one function), never as a branch in §4's chain. The JPEG path used to expand greyscale itself; that was a second place deciding what grey means, and it is gone.
 - **The graph is compiled once, in Rust.** `src/graph/` in the front end is the plan's *executor*. Two compilers would render two topologies and drift the way two shader sources would.
 - **Don't add lcms2 to the product.** It is a dev-dependency of `tests/color/` and belongs there: the harness needs to be able to *disagree* with the shipped ICC parser, which it cannot if both call the same library. Same shape as the derived-not-tabulated matrices rule.
 
 **Measurement**
 
-- **Check the instrument first.** Seven times now a confident number has measured the wrong thing, each caught only by asking why a result had the shape it did: a pass sweep of no-ops; a headroom table destroyed by 8-bit quantisation; a GL error hidden behind a green budget table; an agreement test fed different inputs on each side; a ΔE ranking that would have picked the *flattest* gamut policy; a shader disagreement that was the driver's rounding mode; and §12.2's 57 codes, which cost two wrong diagnoses before landing on the gamut map.
+- **Check the instrument first.** Eight times now a confident number has measured the wrong thing, each caught only by asking why a result had the shape it did: a pass sweep of no-ops; a headroom table destroyed by 8-bit quantisation; a GL error hidden behind a green budget table; an agreement test fed different inputs on each side; a ΔE ranking that would have picked the *flattest* gamut policy; a shader disagreement that was the driver's rounding mode; §12.2's 57 codes, which cost two wrong diagnoses before landing on the gamut map; and the PNG round trip's 0.286, which was a display-encoded frame being compared against a linear decode — the number was `to_linear` of the other side, which is what gave it away.
 - **A green test can quietly change what it measures.** Freezing the gamut policy took Spike B's test 2 from mean ΔE 0.0807 to 1.4183 against its own 1.5 threshold — still passing, and no longer about transform fidelity, because its reference converter clips and the pipeline no longer did. It is pinned to `GamutPolicy::ClipLinear` now. When a policy constant moves, re-read every test whose reference embeds the old one.
 - **§12.2's bar is a precondition, not a number.** Band-limited **and** in-gamut, or the measurement is about an inherent property rather than about the renderer. Under both it is 0.1486 of an 8-bit code; with detail finer than the proxy it is 152. Don't loosen the threshold when it fails — check the fixture still satisfies both conditions.
 - **Both harnesses cross-validate on purpose.** `tests/color/` checks ΔE2000 and the matrices against lcms2, and the ICC parser and writer in both directions; `tests/renderer/` keeps a negative control asserting compute is *refused*. Don't delete either as redundant.
-- **Generate binary fixtures; do not hand-write them.** Twice a hand-built fixture for a format with an offset table was wrong in a way that looked like a code bug — a JPEG rejected with "invalid length in DHT", and an EXIF block whose `ifd()` forgot the four-byte next-IFD pointer. Generate it, check it with something that did not build it, inline the bytes.
+- **Generate binary fixtures; do not hand-write them — and check them with something that did not build them.** Both halves have now caught something. Twice a hand-built fixture for a format with an offset table was wrong in a way that looked like a code bug (a JPEG rejected with "invalid length in DHT"; an EXIF block whose `ifd()` forgot the four-byte next-IFD pointer). And Pillow **silently ignored `interlace=True`** — the "interlaced" PNG it wrote was progressive, and only ImageMagick reading it back said so. `tests/fixtures/interlaced.png` is ImageMagick's, verified with Pillow.
 
 **Traps in the code**
 
@@ -106,6 +111,8 @@ This is the project's recurring shape, and it has now decided five things:
 - **EXIF orientation is applied to the pixels, never carried forward.** It is structure, not description: a sideways file whose tag says "rotate me" reads correctly only to software honouring the tag, so `metadata: strip` would rotate the photograph. libheif applies the container transform itself; the JPEG path does it explicitly.
 - **The photographs are gone from `~/Downloads`.** `real_photos.rs`, `gamut_policy.rs` and `decode_path.rs`'s real-file cases all skip. They are personal files and were never in the repo; put one back or set `PHOTODESK_CORPUS_DIR`. The ΔL\*/ΔC\*/ΔH decomposition on real pixels is the one number `DECISIONS.md` still owes.
 - **`tests/renderer/web/generated/` is gitignored and regenerable.** `cargo test -p photodesk-renderer-spike` emits it. The browser harness loads the *generated* GLSL rather than a twin, deliberately.
+- **`png` swallows an `iCCP` chunk it cannot inflate** and then reports no profile, so a damaged colour claim arrives identical in shape to a file that never made one. §4 says those are different, so `decode.rs` walks the chunk headers itself to tell them apart. Don't replace that with `info.icc_profile.is_none()`.
+- **A 4-bit PNG palette packs two pixels to a byte, high nibble first.** A 1×1 fixture holding `0x10` selects index 1 while looking like it selects index 0 — which is how the first version of that test passed while asserting nothing.
 - **`libheif-rs` is pinned to 2.7, not 3.x.** 3.x needs libheif ≥ 1.23 and Fedora ships 1.21.2. Load-bearing — the binding tracks upstream closely and Fedora will lag it.
 
 ## Open questions

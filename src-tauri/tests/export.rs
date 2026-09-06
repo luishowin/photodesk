@@ -55,15 +55,20 @@ fn output(format: OutputFormat, metadata: MetadataPolicy) -> Output {
 }
 
 fn render_something(r: &Renderer) -> Rendered {
-    let image = Image::new(8, 8, vec![f16::from_f32(0.25); 8 * 8 * 3]);
+    render_image(r, &Image::new(8, 8, vec![f16::from_f32(0.25); 8 * 8 * 3]))
+}
+
+/// The same, over an image the caller keeps — so a test can compare what came back
+/// against what went in.
+fn render_image(r: &Renderer, image: &Image) -> Rendered {
     let doc = Document::new(Source {
         file: "a.jpg".into(),
         hash: "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
-        dimensions: [8, 8],
+        dimensions: [image.width(), image.height()],
         colorspace: ColorSpace::DisplayP3,
         orientation: 1,
     });
-    r.render(&graph::compile(&doc).expect("compile"), &image)
+    r.render(&graph::compile(&doc).expect("compile"), image)
         .expect("render")
 }
 
@@ -140,6 +145,85 @@ fn an_exported_file_carries_its_colour_space() {
     let idat = png.windows(4).position(|w| w == b"IDAT").expect("no IDAT chunk");
     println!("png: {} bytes, iCCP at {iccp}, IDAT at {idat}", png.len());
     assert!(iccp < idat, "the profile is written after the pixels");
+
+    // And since §16 #17, the same round trip the JPEG gets. This is the pair the
+    // ordering assertion above was standing in for: the writer deflates the profile
+    // into `iCCP` and the reader inflates it back, and until now only one half of that
+    // had ever been run.
+    let back = decode::decode(&png).expect("our own PNG export must open in our own decoder");
+    println!("re-imported: {:?} {}", back.tag, back.source_space.name);
+    assert_eq!(back.source_space.name, SRGB.name);
+    assert!(matches!(back.tag, decode::ColourTag::Icc { .. }));
+    assert!(!back.alpha_composited, "the exporter writes no alpha channel");
+}
+
+/// §12.3's shape, one format further: a photograph that goes out through the exporter
+/// and back in through the decoder is the photograph it started as.
+///
+/// PNG is the only format in v0.1 that can make this claim — the JPEG path is lossy, and
+/// 4:2:0 alone would blur it — which makes it the one place §4's chain is checked
+/// against *itself*, encode against decode, rather than each against a reference. A
+/// channel swap, a row shift, a stride mistake or a second transfer curve on either
+/// side all fail here and nowhere else.
+///
+/// It borrows §12.2's precondition and for the same reason: the fixture is **in-gamut**
+/// for sRGB. The exporter gamut-maps on the way out (§16 #11) and a colour outside the
+/// smaller space does not come back, so a saturated fixture would be measuring the
+/// gamut policy rather than the round trip.
+#[test]
+fn a_png_round_trip_returns_the_pixels_it_was_given() {
+    let r = renderer!();
+
+    // Near-neutral, so every pixel is comfortably inside sRGB, and distinct in two
+    // channels, so a shift in either direction is visible. A flat fixture would pass
+    // this test with the rows in any order at all.
+    let mut pixels = Vec::with_capacity(8 * 8 * 3);
+    for y in 0..8 {
+        for x in 0..8 {
+            pixels.push(f16::from_f32(0.20 + x as f32 * 0.02));
+            pixels.push(f16::from_f32(0.30 + y as f32 * 0.02));
+            pixels.push(f16::from_f32(0.25));
+        }
+    }
+    let source = Image::new(8, 8, pixels);
+
+    let rendered = render_image(&r, &source);
+    let png = export::encode(
+        &rendered,
+        &output(OutputFormat::Png, MetadataPolicy::Strip),
+        &SourceMetadata::default(),
+    )
+    .expect("encode");
+    let back = decode::decode(&png).expect("decode");
+
+    assert_eq!((back.image.width(), back.image.height()), (8, 8));
+
+    // Both sides are linear Display P3: the export's P3 → sRGB matrix and the decode's
+    // sRGB → P3 cancel, which is what makes this an equality rather than a conversion.
+    let mut worst = 0.0f32;
+    let mut worst_at = (0, 0);
+    for y in 0..8 {
+        for x in 0..8 {
+            let (a, b) = (source.pixel(x, y), back.image.pixel(x, y));
+            for c in 0..3 {
+                if (a[c] - b[c]).abs() > worst {
+                    worst = (a[c] - b[c]).abs();
+                    worst_at = (x, y);
+                }
+            }
+        }
+    }
+    let (x, y) = worst_at;
+    println!(
+        "worst channel disagreement {worst:.5} at ({x},{y}): {:?} in, {:?} back",
+        source.pixel(x, y),
+        back.image.pixel(x, y)
+    );
+
+    // What is left is one 8-bit code, which around a quarter of full scale is about
+    // 0.004 of the linear range — the sRGB curve's slope there, not a chosen number.
+    // A row shift on this fixture moves a channel by 0.02, five times that.
+    assert!(worst < 0.005, "the round trip moved a pixel by {worst:.5}");
 }
 
 /// A format the document may name and this build cannot write is refused by name, not

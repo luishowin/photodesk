@@ -263,7 +263,12 @@ fn format_is_decided_by_bytes_not_by_name() {
     heif.extend_from_slice(&[0; 16]);
     assert_eq!(decode::sniff(&heif), Some(Format::Heif));
 
-    assert_eq!(decode::sniff(b"\x89PNG\r\n\x1a\n----"), None);
+    assert_eq!(decode::sniff(b"\x89PNG\r\n\x1a\n----"), Some(Format::Png));
+    // PNG's signature is eight bytes and all eight are load-bearing: the trailing
+    // CRLF/EOF/LF exist to catch a transfer that mangled line endings, and a file that
+    // has been through one is not a file this can decode.
+    assert_eq!(decode::sniff(b"\x89PNG\n\n\x1a\n----"), None);
+    assert_eq!(decode::sniff(b"\x89PNG\r\n\x1a"), None);
     assert_eq!(decode::sniff(b""), None);
     assert_eq!(decode::sniff(&[0xFF]), None);
 }
@@ -272,12 +277,12 @@ fn format_is_decided_by_bytes_not_by_name() {
 /// not a silent empty image.
 #[test]
 fn an_unreadable_format_says_what_it_found() {
-    let err = decode::decode(b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0d").unwrap_err();
+    // GIF, which is not going to become a subject. Until §16 #17 this test used a PNG
+    // header, which was the honest choice at the time and is now the wrong one.
+    let err = decode::decode(b"GIF89a\x01\x00\x01\x00\x80").unwrap_err();
     println!("{err}");
     assert!(matches!(err, DecodeError::UnknownFormat { .. }));
-    // PNG is the obvious next format — §4 names a screenshot as a native subject and
-    // GNOME writes PNG. Recorded here rather than in a comment nobody greps for.
-    assert!(err.to_string().contains("89"));
+    assert!(err.to_string().contains("47"), "{err}");
 }
 
 // -------------------------------------------------------- profile classification
@@ -479,6 +484,335 @@ fn a_chunked_app2_profile_is_reassembled_in_order() {
     let back = decode::app2_icc(&jpeg).expect("a profile spread over four chunks");
     assert_eq!(back.len(), profile.len(), "the profile was truncated");
     assert_eq!(back, profile, "the chunks were concatenated in the wrong order");
+}
+
+// -------------------------------------------------------------------------- PNG
+
+/// A PNG built to order.
+///
+/// Generated rather than hand-written, for the reason the JPEG above is — chunk CRCs
+/// and row filters are exactly the kind of offset arithmetic that fails looking like a
+/// decoder bug. Unlike the JPEG, this crate *does* have a PNG encoder, so these
+/// fixtures are written by the same crate that reads them. That is deliberate and it
+/// is not circular: the container is not what these tests are about. The profile is
+/// built above from ICC.1:2010, the colour path is ours, and the one container feature
+/// this encoder cannot write — interlacing — has a fixture from ImageMagick instead.
+struct Png {
+    width: u32,
+    height: u32,
+    colour: png::ColorType,
+    depth: png::BitDepth,
+    data: Vec<u8>,
+    palette: Option<Vec<u8>>,
+    icc: Option<Vec<u8>>,
+    /// Written raw, so a test can supply bytes that are not a valid zlib stream.
+    iccp_raw: Option<Vec<u8>>,
+    srgb_chunk: bool,
+    exif: Option<Vec<u8>>,
+}
+
+impl Png {
+    /// 8-bit RGB by default, the shape a screenshot arrives in.
+    fn of(width: u32, height: u32, data: Vec<u8>) -> Self {
+        Png {
+            width,
+            height,
+            colour: png::ColorType::Rgb,
+            depth: png::BitDepth::Eight,
+            data,
+            palette: None,
+            icc: None,
+            iccp_raw: None,
+            srgb_chunk: false,
+            exif: None,
+        }
+    }
+
+    fn colour(mut self, colour: png::ColorType, depth: png::BitDepth) -> Self {
+        self.colour = colour;
+        self.depth = depth;
+        self
+    }
+
+    fn icc(mut self, profile: &[u8]) -> Self {
+        self.icc = Some(profile.to_vec());
+        self
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, self.width, self.height);
+            encoder.set_color(self.colour);
+            encoder.set_depth(self.depth);
+            if let Some(palette) = &self.palette {
+                encoder.set_palette(palette.clone());
+            }
+            if self.srgb_chunk {
+                encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+            }
+            let mut writer = encoder.write_header().expect("header");
+            // `iCCP` is the export path's chunk builder in miniature: a Latin-1 name, a
+            // null, the compression method, and the deflated profile.
+            if let Some(profile) = &self.icc {
+                use std::io::Write;
+                let mut chunk = b"test\0\0".to_vec();
+                let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+                z.write_all(profile).expect("deflate");
+                chunk.extend_from_slice(&z.finish().expect("deflate"));
+                writer.write_chunk(png::chunk::iCCP, &chunk).expect("iCCP");
+            }
+            if let Some(raw) = &self.iccp_raw {
+                writer.write_chunk(png::chunk::iCCP, raw).expect("iCCP");
+            }
+            if let Some(exif) = &self.exif {
+                writer
+                    .write_chunk(png::chunk::eXIf, exif)
+                    .expect("eXIf");
+            }
+            writer.write_image_data(&self.data).expect("pixels");
+        }
+        out
+    }
+}
+
+/// A single 8-bit RGB pixel, as a whole PNG.
+fn png_pixel(rgb: [u8; 3]) -> Png {
+    Png::of(1, 1, rgb.to_vec())
+}
+
+/// §4's chain runs the same way whatever container the profile arrived in: the file
+/// says Display P3, so the pixel is read as Display P3.
+#[test]
+fn a_png_reads_its_profile_the_way_a_jpeg_does() {
+    let p3 = profile::build(&DISPLAY_P3, profile::Curve::Srgb);
+    let red = [220u8, 40, 30];
+
+    let untagged = decode::decode(&png_pixel(red).bytes()).expect("decode");
+    let tagged = decode::decode(&png_pixel(red).icc(&p3).bytes()).expect("decode");
+    println!("untagged {:?}\ntagged   {:?}", untagged.tag, tagged.tag);
+
+    assert_eq!(untagged.tag, ColourTag::Untagged);
+    assert_eq!(untagged.source_space.name, SRGB.name);
+    assert_eq!(tagged.tag, ColourTag::Icc { bytes: p3.len() });
+    assert_eq!(tagged.source_space.name, DISPLAY_P3.name);
+
+    // And the distinction moves the pixel, which is the whole reason §4 insists on it.
+    // A saturated colour, because a neutral is neutral in both spaces.
+    let (a, b) = (untagged.image.pixel(0, 0), tagged.image.pixel(0, 0));
+    println!("as sRGB {a:?}\nas P3   {b:?}");
+    assert!(
+        (a[0] - b[0]).abs() > 0.05,
+        "reading a saturated red as the wrong space moved it by only {:.4}",
+        (a[0] - b[0]).abs()
+    );
+}
+
+/// §4's guess is defensible for a file that says nothing. A file that *says* sRGB has
+/// said something, and the two are kept apart even though they land in the same space.
+#[test]
+fn a_png_that_names_srgb_is_not_a_png_that_says_nothing() {
+    let mut named = png_pixel([220, 40, 30]);
+    named.srgb_chunk = true;
+
+    let silent = decode::decode(&png_pixel([220, 40, 30]).bytes()).expect("decode");
+    let named = decode::decode(&named.bytes()).expect("decode");
+    println!("silent {:?}\nnamed  {:?}", silent.tag, named.tag);
+
+    assert_eq!(silent.tag, ColourTag::Untagged);
+    assert_eq!(named.tag, ColourTag::SrgbChunk);
+    // Same space, same pixels — the difference is in what the file claimed, which is
+    // what a wrong reading would later have to be traced through.
+    assert_eq!(named.source_space.name, SRGB.name);
+    assert_eq!(silent.image.pixel(0, 0), named.image.pixel(0, 0));
+}
+
+/// A file that says which space it is in, damaged so that it cannot be read, is not a
+/// file that says nothing — and `png` reports both as "no profile".
+#[test]
+fn a_damaged_profile_is_refused_rather_than_read_as_srgb() {
+    let mut broken = png_pixel([220, 40, 30]);
+    // A valid chunk layout — name, null, compression method — wrapped around bytes
+    // that are not a zlib stream.
+    broken.iccp_raw = Some(b"test\0\0not a deflate stream".to_vec());
+
+    let err = decode::decode(&broken.bytes()).unwrap_err();
+    println!("{err}");
+    assert!(matches!(err, DecodeError::Profile(_)), "{err:?}");
+}
+
+/// §4 gives the pipeline no alpha channel and v1 will not grow one, so a file that has
+/// one is resolved at the door — onto white, in linear light.
+#[test]
+fn a_screenshots_transparency_is_composited_onto_white() {
+    // Three pixels: opaque black, half-transparent black, fully transparent black.
+    let data = vec![0, 0, 0, 255, 0, 0, 0, 128, 0, 0, 0, 0];
+    let png = Png::of(3, 1, data).colour(png::ColorType::Rgba, png::BitDepth::Eight);
+    let decoded = decode::decode(&png.bytes()).expect("decode");
+
+    assert!(decoded.alpha_composited, "the discard has to be visible");
+    let opaque = decoded.image.pixel(0, 0);
+    let half = decoded.image.pixel(1, 0);
+    let clear = decoded.image.pixel(2, 0);
+    println!("opaque {opaque:?}\nhalf   {half:?}\nclear  {clear:?}");
+
+    assert!(opaque[0] < 1e-3, "an opaque pixel is untouched");
+    assert!((clear[0] - 1.0).abs() < 1e-3, "a transparent pixel is white");
+
+    // The number that matters. 128/255 of white in *linear* light is 0.502, and this
+    // is the assertion that would fail if the composite ran on encoded values instead
+    // — that lands at 0.502 sRGB-encoded, which is 0.216 linear, less than half of it.
+    let expected = 1.0 - 128.0 / 255.0;
+    println!("expected {expected:.4}, encoded-instead would be {:.4}", 0.2158);
+    assert!(
+        (half[0] - expected).abs() < 2e-3,
+        "half-transparent black landed at {:.4}, not {expected:.4}",
+        half[0]
+    );
+}
+
+/// The only input this build reads that carries more than eight bits a channel. It has
+/// to arrive with them: the working space was chosen for headroom (§2.2), and an f16
+/// buffer fed 8-bit codes has headroom over nothing.
+#[test]
+fn sixteen_bits_arrive_with_more_than_eight() {
+    // A value strictly between two 8-bit codes: 100.5/255 of full scale.
+    let between = 25_800u16;
+    let data: Vec<u8> = [between, between, between]
+        .iter()
+        .flat_map(|v| v.to_be_bytes())
+        .collect();
+    let deep = decode::decode(
+        &Png::of(1, 1, data).colour(png::ColorType::Rgb, png::BitDepth::Sixteen).bytes(),
+    )
+    .expect("decode");
+    assert_eq!(deep.bit_depth, 16);
+
+    let below = decode::decode(&png_pixel([100, 100, 100]).bytes()).expect("decode");
+    let above = decode::decode(&png_pixel([101, 101, 101]).bytes()).expect("decode");
+    let (d, b, a) = (
+        deep.image.pixel(0, 0)[1],
+        below.image.pixel(0, 0)[1],
+        above.image.pixel(0, 0)[1],
+    );
+    println!("8-bit {b:.6} < 16-bit {d:.6} < 8-bit {a:.6}");
+    assert!(
+        b < d && d < a,
+        "a 16-bit sample landed on an 8-bit code: {b:.6} {d:.6} {a:.6}"
+    );
+}
+
+/// Grey and palette are container features rather than colour ones, and the pipeline
+/// downstream should never learn either happened.
+#[test]
+fn grey_and_palette_become_three_channels() {
+    let grey = decode::decode(
+        &Png::of(1, 1, vec![160])
+            .colour(png::ColorType::Grayscale, png::BitDepth::Eight)
+            .bytes(),
+    )
+    .expect("decode");
+    let rgb = decode::decode(&png_pixel([160, 160, 160]).bytes()).expect("decode");
+    println!("grey {:?}\nrgb  {:?}", grey.image.pixel(0, 0), rgb.image.pixel(0, 0));
+    assert_eq!(grey.image.pixel(0, 0), rgb.image.pixel(0, 0));
+
+    // Two pixels in one byte, high nibble first: index 1 then index 0. Written that
+    // way round on purpose — a 4-bit palette is the only input here whose samples are
+    // narrower than a byte, and reading the wrong nibble is a wrong colour rather than
+    // an error. The first attempt at this fixture was 1×1 with the same byte, which
+    // selected index 1 while claiming to select index 0, and passed nothing.
+    let mut paletted = Png::of(2, 1, vec![0x10]);
+    paletted.colour = png::ColorType::Indexed;
+    paletted.depth = png::BitDepth::Four;
+    paletted.palette = Some(vec![220, 40, 30, 0, 0, 0]);
+    let paletted = decode::decode(&paletted.bytes()).expect("decode");
+    let direct = decode::decode(&png_pixel([220, 40, 30]).bytes()).expect("decode");
+    println!(
+        "palette {:?} {:?} at {} bits\ndirect  {:?}",
+        paletted.image.pixel(0, 0),
+        paletted.image.pixel(1, 0),
+        paletted.bit_depth,
+        direct.image.pixel(0, 0)
+    );
+    assert_eq!(paletted.image.pixel(0, 0), [0.0, 0.0, 0.0]);
+    assert_eq!(paletted.image.pixel(1, 0), direct.image.pixel(0, 0));
+    // Four bits selects one of sixteen colours; the colours themselves are 8-bit, and
+    // reporting the index width here would understate the file.
+    assert_eq!(paletted.bit_depth, 8);
+}
+
+/// Adam7, which is the one PNG feature that changes the order rows arrive in — and so
+/// the one that fails as a scrambled image rather than as an error.
+///
+/// The fixture is from ImageMagick because the `png` crate has no interlaced encoder,
+/// and its pixels were checked with Pillow, which did not write it.
+#[test]
+fn an_interlaced_png_is_de_interlaced_before_the_colour_path_sees_it() {
+    let interlaced = decode::decode(INTERLACED_PNG).expect("decode");
+    assert_eq!((interlaced.image.width(), interlaced.image.height()), (8, 8));
+
+    // The same pattern written progressively. Every pixel in it is distinct by
+    // construction, so a scrambled de-interlace cannot pass by landing on a plausible
+    // average somewhere in the middle.
+    let pattern: Vec<u8> = (0..8u8)
+        .flat_map(|y| (0..8u8).flat_map(move |x| [x * 32 + 8, y * 32 + 8, 128]))
+        .collect();
+    let progressive = decode::decode(&Png::of(8, 8, pattern).bytes()).expect("decode");
+
+    for y in 0..8 {
+        for x in 0..8 {
+            assert_eq!(
+                interlaced.image.pixel(x, y),
+                progressive.image.pixel(x, y),
+                "({x},{y}) does not survive Adam7"
+            );
+        }
+    }
+}
+
+/// PhotoDesk writes `eXIf` on export (§6.1), so a PNG it produced and reopened has an
+/// orientation like any other file — and §0's rule is that the pixels get turned.
+#[test]
+fn a_pngs_exif_orientation_is_applied_to_the_pixels() {
+    // Two rows, distinguishable: orientation 3 is a 180° rotation, so they swap.
+    let data = vec![255, 0, 0, 0, 0, 255];
+    let upright = decode::decode(&Png::of(1, 2, data.clone()).bytes()).expect("decode");
+    assert_eq!(upright.orientation, 1);
+
+    let mut turned = Png::of(1, 2, data);
+    turned.exif = Some(exif_block(3));
+    let turned = decode::decode(&turned.bytes()).expect("decode");
+    println!("orientation {}", turned.orientation);
+    assert_eq!(turned.orientation, 3);
+    assert_eq!(turned.image.pixel(0, 0), upright.image.pixel(0, 1));
+    assert_eq!(turned.image.pixel(0, 1), upright.image.pixel(0, 0));
+}
+
+/// 8×8, one distinct colour per pixel, Adam7-interlaced.
+///
+/// Written by ImageMagick because the `png` crate has no interlaced encoder, and read
+/// back with Pillow — which did not write it — to confirm both the interlace bit in
+/// `IHDR` and every pixel of the pattern. Pillow was the first choice for writing it
+/// and its `interlace=True` was silently ignored, which is the reason the check with a
+/// second tool is in the rule rather than in somebody's habits.
+const INTERLACED_PNG: &[u8] = include_bytes!("fixtures/interlaced.png");
+
+/// A bare TIFF block with one IFD0 entry: orientation.
+///
+/// Little-endian, and with the four-byte next-IFD pointer that a previous hand-built
+/// EXIF fixture in this project forgot — an omission that read as a parser bug.
+fn exif_block(orientation: u16) -> Vec<u8> {
+    let mut out = b"II".to_vec();
+    out.extend_from_slice(&42u16.to_le_bytes());
+    out.extend_from_slice(&8u32.to_le_bytes()); // IFD0 begins immediately
+    out.extend_from_slice(&1u16.to_le_bytes()); // one entry
+    out.extend_from_slice(&0x0112u16.to_le_bytes()); // Orientation
+    out.extend_from_slice(&3u16.to_le_bytes()); // SHORT
+    out.extend_from_slice(&1u32.to_le_bytes()); // count
+    out.extend_from_slice(&orientation.to_le_bytes());
+    out.extend_from_slice(&[0, 0]); // the value field is four bytes wide
+    out.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
+    out
 }
 
 // ------------------------------------------------------------------ §7.1's proxy

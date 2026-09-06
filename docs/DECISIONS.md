@@ -775,3 +775,66 @@ The EXIF fixture is generated and inlined, like the JPEG before it — and the g
 **§16 #18 — tiled full-res export.** §7.1 describes export as tiled and this writes whole images. The renderer releases a node's texture as soon as its last consumer has run, so a 12 MP export is a few hundred megabytes against §7.3's 512 MB cap — comfortable, and not the streaming path §7.1 describes. Due before a 60 MP source, or before v0.7's batch export makes the peak matter.
 
 **§16 #19 — HEIF output, and EXIF for HEIF sources.** §6.1's formats are JPEG, PNG and TIFF, so a HEIC-in-HEIC-out round trip is not among them, and the metadata policy currently reads EXIF from JPEG only. §4's default output is sRGB JPEG for a reason — "that's what survives contact with the internet" — so this waits until a HEIF export is actually wanted.
+
+---
+
+## 2026-09-06 — §16 #17 closed: PNG, and therefore screenshots; spec v0.18 → v0.19
+
+§1 has named a screenshot a native subject since the first draft, and §4 wrote it a colour rule — "assume sRGB if untagged". Until today that rule was demonstrated against an untagged **JPEG**, because v0.1 decoded HEIF and JPEG only. The right rule, exercised on the wrong file. `engine/decode.rs` grows a third decoder, 9 new tests, and the workspace is at 131.
+
+The register called it "one decoder against a colour path that already exists", and that was accurate about the colour and wrong about the size. The colour half took almost nothing: `iCCP` goes through the same classifier as JPEG's APP2, the untagged fallback is §4's existing sentence, and the working-space conversion needed no new arithmetic at all. What PNG actually brought is a **container with opinions** — palette, sub-byte samples, greyscale, sixteen-bit samples, Adam7 interlacing, and an alpha channel — and every one of them is a question about *where* something gets resolved rather than about colour.
+
+### The rule that fell out: flatten before the chain, never inside it
+
+Six container features, and the load-bearing decision is that none of them reaches §4's chain as a branch.
+
+`Transformations::EXPAND` handles three of them inside the decoder — palette becomes RGB, a sub-8-bit grey becomes 8-bit, `tRNS` becomes a real alpha channel. Adam7 is `next_frame`'s business and the de-interlaced image is what comes back. That leaves grey, depth and alpha for the conversion function, which now takes a described buffer rather than a pointer and a stride:
+
+```rust
+struct Surface<'a> { data, width, height, stride, channels, depth }
+```
+
+and the JPEG path lost its own greyscale expansion in the process — it had been replicating L8 into RGB24 before handing the buffer over, which was a second place that decided what grey means. There is one now. **That is a register item**, and it is the same argument as one shader source at a smaller scale: three decoders returning three shapes will otherwise grow three conversions, which agree until they do not and nothing is checking.
+
+The sixteen-bit path is a 65,536-entry table where the 8-bit one is 256. Worth the 256 KB: a PNG is the only input v0.1 reads that carries more than eight bits a channel, and stripping it on the way into an f16 buffer chosen for headroom (§2.2) would be a strange thing to do with the one file that has any. The test asserts a 16-bit sample lands *strictly between* the two 8-bit codes that bracket it, which is the only form of that claim that cannot pass by accident.
+
+### Alpha is a decision, and "drop it" is not the neutral option
+
+The pipeline has no alpha channel and v1 will not grow one, so a file that has one has to be resolved at the door. Dropping it looks like doing nothing and isn't: PNG's alpha is un-premultiplied, so the RGB under a fully transparent pixel is whatever the compositor last wrote there. A GNOME window screenshot's rounded corners would arrive carrying arbitrary colour rather than nothing at all — and §1 named that file a native subject.
+
+So it is composited onto white, which is the page it is going to be looked at on. **In linear light**, and that half is not a preference: half-transparent black over white is 0.502 of linear white, and the same composite performed on encoded values lands at **0.216** — less than half of it, and wrong in the direction that looks plausible. The test asserts 0.502 and names 0.216 in its comment, because the failure this guards against produces a picture rather than an error.
+
+The composite runs before the RGB→P3 matrix, which is free: both spaces are D65 and the matrix maps white to white, so `M(a·c + (1−a)·1) = a·M(c) + (1−a)·1`. It commutes, so it goes where it is cheapest to read.
+
+### A damaged claim is not the absence of a claim
+
+§4's premise is that assuming sRGB for a file that *says nothing* is a defensible guess and assuming it for a file that says otherwise is not. PNG has four chunks with an opinion about colour and the crate collapses two failure modes into one:
+
+- `iCCP` carries a profile. Same classifier as everywhere else.
+- `sRGB` names the space without carrying one — NCLX's arrangement in a different container. Reported as its own `ColourTag` rather than folded into `Untagged`, because a file that said sRGB has said something and a wrong reading later has to be traceable to which.
+- `cHRM` and `gAMA` describe a space numerically instead of naming it. **Not read** (register, provisional). Reading them means a nearest-space classifier, which is precisely the shape §4 has been bitten by once already — Adobe RGB sits 0.0901 from Display P3 and nearer to it than to sRGB, so the obvious version of that classifier reads Adobe RGB as P3 silently. The exit condition is a file that carries them without `iCCP` or `sRGB`, in a corpus rather than in the abstract.
+
+And the one that needed code: **`png` swallows an `iCCP` chunk it cannot inflate** — `let _ = self.parse_iccp_raw()` — and then reports no profile. A file whose colour claim is damaged arrives at our decoder byte-identical in shape to a file that never made one, and §4 says those are different. The chunk headers are walked to tell them apart, which PNG makes arithmetic rather than parsing: a length, a type, and a stop at `IDAT`. A damaged claim is refused; a missing one gets §4's guess.
+
+### The round trip that could not be run before
+
+`export.rs` has written PNG since v0.1's export landed, and the only thing asserting the `iCCP` it deflates was well-formed was that the chunk appeared before `IDAT`. Half a claim. There is now a decoder to close it, and **PNG is the only format in v0.1 where a round trip is an equality rather than a tolerance** — the JPEG path is lossy and 4:2:0 alone would blur it.
+
+A photograph goes out through the exporter and back in through the decoder and lands on the pixels it started as, worst channel **0.00293** against the ~0.004 that one 8-bit code is worth at that part of the sRGB curve. Both sides are linear Display P3 and the two matrices cancel, which is what makes it an equality; the fixture is near-neutral and **in-gamut**, borrowing §12.2's precondition for §12.2's reason — a saturated fixture would be measuring §16 #11's gamut policy rather than the round trip.
+
+The first version of that test measured nothing. It compared the *rendered* frame against the decoded image and failed at 0.286 — and the number was legible: 0.5366 out, 0.2502 back, and 0.2502 is exactly `to_linear(0.5366)`. The rendered frame is display-encoded and the decode produces linear working space, so the test was comparing an encoded value against a linear one and calling the transfer curve a defect. Eighth time that a confident number has measured the wrong thing, and it was caught the same way as the other seven: by asking why the result had the shape it did rather than by loosening the threshold. The fixed version compares the decode against the *source image*, which is where a round trip is supposed to return to.
+
+### Two fixtures, and one of them lied
+
+The PNG fixtures are built with the `png` crate's encoder, which is a weaker guarantee than the JPEG fixtures get and deliberately so: the container is not what these tests are about. The profile they carry is still built by hand from ICC.1:2010, and the colour path is ours.
+
+Interlacing is the exception, because the crate has no interlaced encoder — and it is the one PNG feature that changes the order rows arrive in, so it fails as a scrambled image rather than as an error. Pillow was asked for one and **silently ignored `interlace=True`**; ImageMagick confirmed the file it produced had `interlace_method: 0`. The fixture is ImageMagick's, checked with Pillow, which did not write it. That is the standing rule — generate it, check it with something that did not build it — and this is the third time it has caught something, which is the reason it is a rule rather than a habit.
+
+The palette fixture lied too, more quietly. A 4-bit index packs two pixels to a byte, high nibble first, so a 1×1 image holding `0x10` selects index **1** while the test claimed it selected index 0 — and the test passed nothing, because the palette entry it landed on was black and the assertion was against a colour it never reached. It is 2×1 now and asserts both nibbles, which is the version that exercises the unpacking it was written for.
+
+### Register
+
+- **An alpha channel is composited onto white, in linear light, at decode.** FROZEN.
+- **One conversion path from a decoded buffer to the working space.** FROZEN.
+- **PNG's `cHRM`/`gAMA` are not read as a colour tag.** PROVISIONAL, exit condition named.
+- §16 #17 closed. What remains before v0.1 ships is the front end.

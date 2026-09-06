@@ -16,11 +16,11 @@ There is no application yet. The architecture spec committed to three spikes bef
 
 | Phase | State |
 |---|---|
-| Spec | v0.14 — [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Spec | v0.19 — [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Spike A — RapidRAW fork audit | **complete — gate failed, no fork.** [`docs/FORK-AUDIT.md`](docs/FORK-AUDIT.md) |
 | Spike B — colour validation harness | **complete — green, working space frozen.** [`docs/SPIKE-B.md`](docs/SPIKE-B.md) |
 | Spike C — preview renderer | **complete — green, preview path frozen.** [`docs/SPIKE-C.md`](docs/SPIKE-C.md) |
-| v0.1 | **started** — document model done; graph compile, decode, sliders and export to come |
+| v0.1 | **the headless half is done** — document model, graph compile, decode, render and export. What remains is the front end |
 
 **Spike A failed its gate on 2026-09-05, which is the outcome it was run to find.** RapidRAW's per-pixel chain is one compute kernel in which stage order is the literal statement order, and vendored shaders are read-only — so "pipeline order is explicit and versioned", a frozen item, could not be implemented inside the fork. Three further findings said the fork would not have supplied much of what it was wanted for: RapidRAW has **no colour management at all**, **cannot open HEIF**, and on Linux ships every preview frame as a lossy JPEG over IPC. PhotoDesk builds against `rawler` + `libheif` + its own shaders instead.
 
@@ -35,6 +35,12 @@ There is no application yet. The architecture spec committed to three spikes bef
 **v0.1's first piece is the document model** ([`src-tauri/src/photodesk/`](src-tauri/src/photodesk)), which §14 puts before the sliders on the argument that the boring parts are the ones impossible to bolt on later. §6.3's migration table is six conditions with six different behaviours and three of them are not accept-or-reject, so it lives in the types: loading returns a `Loaded` whose document is not a public field, and since the only door to an owned one is `into_writable()`, **read-only is enforced by the compiler** rather than by everyone's care. The schema is defined once in Rust and the TypeScript types are *generated* from it, for the same reason the browser harness loads generated GLSL rather than a hand-written twin.
 
 Writing it found a bug in the specification, in the one workflow §14 gives v0.1. §6.1 named the sidecar `IMG_4821.photodesk.json` — extension dropped. But v0.1 is "open a HEIF → … → export", so the export lands as `IMG_4821.jpg` beside `IMG_4821.HEIC`, and under that naming the two photographs share one sidecar: editing the export silently overwrites the original's edits. The sidecar now keeps the whole filename.
+
+**Everything headless in v0.1 now exists**: the document model, §6.2's graph compile, decode, the render path through wgpu, and export. §12.3's source-preservation test has all five of its steps for the first time, and §12.2's proxy/full-res agreement is measured — as a *precondition* rather than a number, because the two paths agree to 0.15 of an 8-bit code on band-limited in-gamut content and to 152 on content finer than the proxy, and neither figure is a defect.
+
+The last format gap closed on 2026-09-06: **PNG, and therefore screenshots.** §1 has named a screenshot a native subject since the first draft and §4 wrote it a colour rule, but the decoder read HEIF and JPEG only — so "assume sRGB if untagged" was being demonstrated against an untagged JPEG. The colour half was small, as expected; what PNG actually brought was a container with opinions — palette, sub-byte samples, greyscale, sixteen-bit, Adam7, alpha — and the decision that mattered was resolving all of them *before* §4's chain rather than as branches inside it. Alpha is the one that is a judgement call: it is composited onto white, in linear light, because dropping it is not the neutral option it looks like — the RGB under a transparent pixel is whatever the compositor last wrote there, so a window screenshot's rounded corners would arrive carrying arbitrary colour.
+
+It also closed a half-claim. `export` has written PNG since v0.1's export landed, and nothing could read the `iCCP` it deflates back; PNG is the only format in v0.1 where a round trip is an equality rather than a tolerance, and a photograph now goes out through the exporter and back in through the decoder to within **0.00293** — under the ~0.004 that one 8-bit code is worth at that part of the curve.
 
 See [`docs/DECISIONS.md`](docs/DECISIONS.md) for what has been decided and why, and [`docs/REVIEW-2026-09-05.md`](docs/REVIEW-2026-09-05.md) for what is still open.
 
@@ -83,10 +89,13 @@ A seventh on the same day: **the export gamut policy**, above. It came with a co
 
 ## Picking up
 
-**Phase 0 is done, and as of 2026-09-06 nothing stands between here and v0.1.** Two things did, neither a spike, and both are closed:
+**Phase 0 is done, v0.1's headless half is built, and what remains is the front end** — §14's v0.1 is a photograph a person can open, drag six sliders on, compare against the original, and export, which means Tauri, the WebGL2 preview executing a compiled plan, and §11's slider contract hand-written. Building it needs four devel packages (`webkit2gtk4.1-devel`, `gtk3-devel`, `librsvg2-devel`, `openssl-devel`).
+
+Three things stood in front of v0.1 and none does now:
 
 1. ~~**Name the export gamut-mapping policy.**~~ Closed — clip chroma at constant luminance, measured rather than picked. [`tests/color/tests/gamut_policy.rs`](tests/color/tests/gamut_policy.rs), §4, and the entry in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 2. ~~**Confirm webkit2gtk-4.1.**~~ Closed — the 4.1 binding returns identical capabilities and identical pixel agreement to webkitgtk-6.0, on the same machine on the same day.
+3. ~~**PNG input (§16 #17).**~~ Closed — §1's screenshot is a file the app can open, and the exporter's PNG has a reader.
 
 Two findings arrived alongside them, both of which land on the golden-image suite before its first `--bless`. **An RGBA16F colour attachment can truncate toward zero rather than round to nearest** — measured on RADV/RENOIR, where 48,020 of 49,152 stored channels are bit-exactly the reference truncated — which is a full-step bias that is the driver's doing and not the shader's. And a green test can quietly change what it measures: freezing the gamut policy took the colour harness's P3→sRGB test from mean ΔE 0.0807 to **1.4183 against its own 1.5 threshold**, still passing and no longer about transform fidelity at all, because its reference converter clips and the pipeline no longer did.
 
@@ -124,8 +133,8 @@ v0.1 deliberately excludes curves and HSL. They're the fun part, which is exactl
 There is no application to run — `src-tauri/` is a library and links no webview yet, deliberately, so that §12.3's source-preservation test and §12.1's golden images can run headless on every commit. The two Phase 0 harnesses are permanent suites rather than scaffolding: §13 keeps them because every later golden-image test sits on top of what they check.
 
 ```sh
-cargo test --workspace                                   # everything, ~2 s
-cargo test -p photodesk -- --nocapture                   # the document model
+cargo test --workspace                                   # everything, 131 tests, ~4 s
+cargo test -p photodesk -- --nocapture                   # the core: document, graph, decode, render, export
 cargo test -p photodesk-color -- --nocapture             # the colour numbers
 cargo test -p photodesk-renderer-spike -- --nocapture    # transpilation and agreement
 ```

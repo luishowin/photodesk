@@ -56,6 +56,12 @@ pub struct Decoded {
     pub bit_depth: u8,
     /// Present and deliberately not applied (§4).
     pub gain_map: Option<GainMap>,
+    /// The file carried an alpha channel, and it has been composited onto white.
+    ///
+    /// Reported for the same reason `gain_map` is: the pipeline has no alpha channel
+    /// and v1 will not grow one, so the resolution happens at decode — and a discard
+    /// the caller can see beats one it has to assume.
+    pub alpha_composited: bool,
     /// The EXIF orientation found in the file, **already applied** to `image`.
     ///
     /// Reported rather than silently consumed because the document records it (§6.1's
@@ -71,6 +77,12 @@ pub enum ColourTag {
     Icc { bytes: usize },
     /// HEIF's NCLX box: coded primaries rather than a profile.
     Nclx,
+    /// PNG's `sRGB` chunk: the space named rather than carried.
+    ///
+    /// NCLX's arrangement in a different container, and kept apart from `Untagged` for
+    /// the same reason — §4's guess is defensible for a file that says nothing, and
+    /// this is a file that said something.
+    SrgbChunk,
     /// Nothing. §4: assume sRGB.
     Untagged,
 }
@@ -134,7 +146,13 @@ pub enum Format {
     /// HEIF/HEIC/AVIF — anything in an ISO base-media container with a `ftyp` box.
     Heif,
     Jpeg,
+    Png,
 }
+
+/// PNG's signature. Eight bytes rather than four on purpose: the last four catch a
+/// transfer that converted line endings or stripped the high bit, which is what they
+/// were put there for (PNG 1.2 §3.1).
+const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
 /// Identify a file by its bytes rather than its name.
 ///
@@ -144,6 +162,9 @@ pub enum Format {
 pub fn sniff(bytes: &[u8]) -> Option<Format> {
     if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
         return Some(Format::Jpeg);
+    }
+    if bytes.len() >= 8 && bytes[..8] == PNG_MAGIC {
+        return Some(Format::Png);
     }
     // An ISO base-media file starts with a four-byte length and then `ftyp`.
     if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
@@ -163,6 +184,7 @@ pub fn decode(bytes: &[u8]) -> Result<Decoded, DecodeError> {
     match sniff(bytes) {
         Some(Format::Heif) => heif::decode(bytes),
         Some(Format::Jpeg) => jpeg::decode(bytes),
+        Some(Format::Png) => png::decode(bytes),
         None => {
             let mut magic = [0u8; 12];
             let n = bytes.len().min(12);
@@ -172,35 +194,105 @@ pub fn decode(bytes: &[u8]) -> Result<Decoded, DecodeError> {
     }
 }
 
-/// 8-bit interleaved RGB in `space` → linear Display P3 f16.
+/// A decoder's output buffer, described so §4's chain can be run over it once.
 ///
-/// The one place §4's chain is executed. Both decoders funnel through it so there is a
-/// single answer to "what happened to this pixel", which is the same reason §0 freezes
-/// one shader source: two conversion paths would agree until they did not.
-fn to_working_space(
-    rgb: &[u8],
+/// The three decoders hand back different shapes — libheif pads its rows, and a PNG can
+/// be grey, sixteen-bit, or carry alpha — and the alternative to describing them is a
+/// conversion per format. Two conversion paths would agree until they did not, which is
+/// the reason §0 freezes one shader source and the reason there is one of these.
+struct Surface<'a> {
+    data: &'a [u8],
     width: u32,
     height: u32,
+    /// Bytes per row, which is not always `width × channels × sample`: libheif pads.
     stride: usize,
-    space: &Space,
-) -> Image {
+    /// 1 grey, 2 grey and alpha, 3 RGB, 4 RGBA. Alpha is always last.
+    channels: usize,
+    depth: Depth,
+}
+
+/// Bits per sample, as the decoder handed them over.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Depth {
+    Eight,
+    /// Big-endian pairs — how PNG stores them, and how `png` returns them.
+    Sixteen,
+}
+
+impl Depth {
+    fn bytes(self) -> usize {
+        match self {
+            Depth::Eight => 1,
+            Depth::Sixteen => 2,
+        }
+    }
+
+    fn levels(self) -> usize {
+        match self {
+            Depth::Eight => 256,
+            Depth::Sixteen => 65_536,
+        }
+    }
+}
+
+/// A decoded surface in `space` → linear Display P3 f16, and whether an alpha channel
+/// was composited away getting there.
+///
+/// The one place §4's chain is executed. Every decoder funnels through it so there is a
+/// single answer to "what happened to this pixel", which is the same reason §0 freezes
+/// one shader source: two conversion paths would agree until they did not.
+fn to_working_space(surface: Surface<'_>, space: &Space) -> (Image, bool) {
+    let Surface { data, width, height, stride, channels, depth } = surface;
     let matrix = space.linear_to(&LINEAR_P3);
     let mut pixels = vec![f16::ZERO; width as usize * height as usize * 3];
 
-    // A 256-entry table, because the transfer curve is the expensive part — a `powf`
-    // per channel over 12 megapixels is 36 million of them — and an 8-bit source has
-    // only 256 possible inputs. Exact rather than approximate: every value the source
-    // can hold is in the table.
-    let mut lut = [0.0f32; 256];
-    for (code, slot) in lut.iter_mut().enumerate() {
-        *slot = space.transfer.to_linear(code as f32 / 255.0);
-    }
+    // A table over every value a sample can hold, because the transfer curve is the
+    // expensive part — a `powf` per channel over 12 megapixels is 36 million of them —
+    // and the input is an integer. Exact rather than approximate: 256 entries for an
+    // 8-bit source, 65,536 for a 16-bit one, which is 256 KB and still cheaper than the
+    // first megapixel of `powf`.
+    let max = (depth.levels() - 1) as f32;
+    let lut: Vec<f32> = (0..depth.levels())
+        .map(|code| space.transfer.to_linear(code as f32 / max))
+        .collect();
 
+    let sample = |at: usize| -> usize {
+        match depth {
+            Depth::Eight => data[at] as usize,
+            Depth::Sixteen => u16::from_be_bytes([data[at], data[at + 1]]) as usize,
+        }
+    };
+
+    let alpha = channels == 2 || channels == 4;
+    let step = depth.bytes();
     for y in 0..height as usize {
         let row = y * stride;
         for x in 0..width as usize {
-            let i = row + x * 3;
-            let linear = [lut[rgb[i] as usize], lut[rgb[i + 1] as usize], lut[rgb[i + 2] as usize]];
+            let i = row + x * channels * step;
+            // Grey is expanded to three channels here rather than downstream, so every
+            // stage after this one sees a colour image and none of them needs a case
+            // for the photograph that happens to have no chroma.
+            let mut linear = match channels {
+                1 | 2 => {
+                    let v = lut[sample(i)];
+                    [v, v, v]
+                }
+                _ => [
+                    lut[sample(i)],
+                    lut[sample(i + step)],
+                    lut[sample(i + 2 * step)],
+                ],
+            };
+            if alpha {
+                // §4: the pipeline has no alpha channel, so a file that has one is
+                // resolved here, onto white. In linear light, because that is the only
+                // place the arithmetic is right — and the alpha sample itself never
+                // goes through the curve, because opacity was never encoded by one.
+                let a = sample(i + (channels - 1) * step) as f32 / max;
+                for c in &mut linear {
+                    *c = *c * a + (1.0 - a);
+                }
+            }
             let working = matrix.apply(linear);
             let o = (y * width as usize + x) * 3;
             pixels[o] = f16::from_f32(working[0]);
@@ -208,7 +300,7 @@ fn to_working_space(
             pixels[o + 2] = f16::from_f32(working[2]);
         }
     }
-    Image::new(width, height, pixels)
+    (Image::new(width, height, pixels), alpha)
 }
 
 /// Classify an embedded profile, or fall back to §4's stated assumption.
@@ -301,18 +393,30 @@ mod heif {
             .interleaved
             .ok_or_else(|| DecodeError::Broken("no interleaved RGB plane".into()))?;
 
-        let image = to_working_space(
-            plane.data,
-            decoded.width(),
-            decoded.height(),
-            plane.stride,
+        let (image, _) = to_working_space(
+            Surface {
+                data: plane.data,
+                width: decoded.width(),
+                height: decoded.height(),
+                stride: plane.stride,
+                channels: 3,
+                depth: Depth::Eight,
+            },
             space,
         );
         // libheif applies the container's `irot`/`imir` transform properties during
         // decode, so what comes back is already upright and there is nothing to undo.
         // Recorded as 1 rather than left unstated: the document's `source.orientation`
         // describes the pixels the pipeline is holding, not the file's bookkeeping.
-        Ok(Decoded { image, source_space: space, tag, bit_depth, gain_map, orientation: 1 })
+        Ok(Decoded {
+            image,
+            source_space: space,
+            tag,
+            bit_depth,
+            gain_map,
+            alpha_composited: false,
+            orientation: 1,
+        })
     }
 
     /// The container's compression format, from its `ftyp` brand.
@@ -354,12 +458,11 @@ mod jpeg {
             .info()
             .ok_or_else(|| DecodeError::Broken("the decoder reported no image info".into()))?;
 
-        let rgb: Vec<u8> = match info.pixel_format {
-            jpeg_decoder::PixelFormat::RGB24 => pixels,
-            // A greyscale JPEG is a photograph too, and expanding it here means every
-            // stage downstream sees three channels and none of them needs a special
-            // case.
-            jpeg_decoder::PixelFormat::L8 => pixels.iter().flat_map(|v| [*v, *v, *v]).collect(),
+        // A greyscale JPEG is a photograph too, and `to_working_space` is where a
+        // single channel becomes three — one place decides what grey means.
+        let channels = match info.pixel_format {
+            jpeg_decoder::PixelFormat::RGB24 => 3,
+            jpeg_decoder::PixelFormat::L8 => 1,
             other => {
                 return Err(DecodeError::Broken(format!(
                     "the decoder produced {other:?}, which is not 8-bit RGB or greyscale"
@@ -375,13 +478,24 @@ mod jpeg {
         let orientation = crate::engine::exif::from_jpeg(bytes)
             .map(|e| e.orientation())
             .unwrap_or(1);
-        let image = to_working_space(&rgb, w, h, w as usize * 3, space).oriented(orientation);
+        let (image, _) = to_working_space(
+            Surface {
+                data: &pixels,
+                width: w,
+                height: h,
+                stride: w as usize * channels,
+                channels,
+                depth: Depth::Eight,
+            },
+            space,
+        );
         Ok(Decoded {
-            image,
+            image: image.oriented(orientation),
             source_space: space,
             tag,
             bit_depth: 8,
             gain_map: None,
+            alpha_composited: false,
             orientation,
         })
     }
@@ -421,6 +535,152 @@ mod jpeg {
         }
         chunks.sort_by_key(|(sequence, _)| *sequence);
         Some(chunks.into_iter().flat_map(|(_, d)| d.iter().copied()).collect())
+    }
+}
+
+// -------------------------------------------------------------------------- PNG
+
+/// §16 #17. The format §1's screenshot actually arrives in.
+///
+/// Everything colour here is the path JPEG already walks — a profile, or §4's stated
+/// assumption — so what is new is the container: PNG can be grey, paletted, sixteen
+/// bits deep, interlaced, or carry an alpha channel, and none of those are colour
+/// decisions. `Transformations::EXPAND` and [`to_working_space`] absorb them.
+mod png {
+    use super::*;
+
+    // The crate and this module share a name, so every path to the crate is written
+    // from the root. Verbose, and unambiguous where a glob import made it otherwise.
+
+    pub fn decode(bytes: &[u8]) -> Result<Decoded, DecodeError> {
+        let mut decoder = ::png::Decoder::new(std::io::Cursor::new(bytes));
+        // `EXPAND` turns a palette into RGB, a sub-8-bit grey into 8-bit, and a `tRNS`
+        // chunk into a real alpha channel: three container features that carry no
+        // colour meaning, so they are the decoder's business rather than §4's.
+        //
+        // It deliberately does *not* strip 16-bit samples. A 16-bit PNG is the only
+        // input this build reads that carries more than eight bits per channel, and
+        // spending half of it on the way into an f16 working space chosen for headroom
+        // (§2.2) would be an odd thing to do.
+        decoder.set_transformations(::png::Transformations::EXPAND);
+        let mut reader = decoder
+            .read_info()
+            .map_err(|e| DecodeError::Broken(e.to_string()))?;
+
+        let (space, tag) = {
+            let info = reader.info();
+            match (info.icc_profile.as_deref(), info.srgb) {
+                (Some(profile), _) => (
+                    space_from_icc(profile)?,
+                    ColourTag::Icc { bytes: profile.len() },
+                ),
+                // The `sRGB` chunk names the space instead of carrying it. PNG says a
+                // file should not have both, and gives `iCCP` precedence where one
+                // does, which is the order matched here.
+                (None, Some(_)) => (&SRGB, ColourTag::SrgbChunk),
+                (None, None) => {
+                    // `png` drops an `iCCP` chunk it cannot inflate and reports no
+                    // profile, which arrives here indistinguishable from a file that
+                    // never had one — and those two being different is §4's whole
+                    // premise. So the chunk headers get walked to tell them apart.
+                    if has_iccp(bytes) {
+                        return Err(DecodeError::Profile(IccError::NotAProfile(
+                            "an `iCCP` chunk that could not be decompressed. The file \
+                             says which space it is in and the bytes saying so are \
+                             damaged, which is not the same as a file that says nothing"
+                                .into(),
+                        )));
+                    }
+                    (&SRGB, ColourTag::Untagged)
+                }
+            }
+        };
+
+        // Recorded from the header rather than from the frame, because it describes
+        // the file rather than the buffer: `EXPAND` widens a 4-bit grey to 8, and §4's
+        // headroom argument is about what the photograph arrived carrying.
+        let bit_depth = match reader.info().color_type {
+            // On an indexed image `bit_depth` is the width of the *index* — 4 bits
+            // still selects one of sixteen 8-bit colours, because `PLTE` entries are
+            // always 8-bit RGB. Reporting 4 here would understate the file.
+            ::png::ColorType::Indexed => 8,
+            _ => reader.info().bit_depth as u8,
+        };
+
+        let size = reader
+            .output_buffer_size()
+            .ok_or_else(|| DecodeError::Broken("this image is too large to allocate".into()))?;
+        let mut buffer = vec![0u8; size];
+        // Adam7 is de-interlaced by `next_frame`, so an interlaced file needs nothing
+        // here beyond not assuming rows arrive in order.
+        let frame = reader
+            .next_frame(&mut buffer)
+            .map_err(|e| DecodeError::Broken(e.to_string()))?;
+
+        let depth = match frame.bit_depth {
+            ::png::BitDepth::Sixteen => Depth::Sixteen,
+            // `EXPAND` has already widened one, two and four to eight.
+            _ => Depth::Eight,
+        };
+        let (image, alpha_composited) = to_working_space(
+            Surface {
+                data: &buffer,
+                width: frame.width,
+                height: frame.height,
+                stride: frame.line_size,
+                channels: frame.color_type.samples(),
+                depth,
+            },
+            space,
+        );
+
+        // PNG's `eXIf` holds a bare TIFF block, and PhotoDesk writes one on export — so
+        // a file this app produced and reopened has an orientation to honour like any
+        // other. Read after the frame rather than before it: the chunk is legal on
+        // either side of `IDAT`.
+        let orientation = reader
+            .info()
+            .exif_metadata
+            .as_deref()
+            .and_then(|tiff| crate::engine::exif::parse(tiff).ok())
+            .map(|e| e.orientation())
+            .unwrap_or(1);
+
+        Ok(Decoded {
+            image: image.oriented(orientation),
+            source_space: space,
+            tag,
+            bit_depth,
+            gain_map: None,
+            alpha_composited,
+            orientation,
+        })
+    }
+
+    /// Whether the file contains an `iCCP` chunk, whatever shape it is in.
+    ///
+    /// PNG's structure makes this cheap and total: after the signature, the file is a
+    /// sequence of length-tagged chunks, so the walk is arithmetic rather than parsing.
+    /// It stops at `IDAT` because `iCCP` is not legal after it.
+    fn has_iccp(bytes: &[u8]) -> bool {
+        let mut at = PNG_MAGIC.len();
+        while at + 8 <= bytes.len() {
+            let len = u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+            let kind = &bytes[at + 4..at + 8];
+            if kind == b"iCCP" {
+                return true;
+            }
+            if kind == b"IDAT" || kind == b"IEND" {
+                return false;
+            }
+            // Length, type, data, CRC. A length that overflows is a truncated file,
+            // which the decoder will have its own opinion about.
+            match at.checked_add(12).and_then(|a| a.checked_add(len as usize)) {
+                Some(next) => at = next,
+                None => return false,
+            }
+        }
+        false
     }
 }
 

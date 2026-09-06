@@ -35,3 +35,11 @@ pollster.workspace = true
 
 [dev-dependencies]
 ts-rs.workspace = true
+# Already a dependency above; repeated here so the integration tests can *build* the
+# PNGs they decode. The container is not what those tests are about — the profile they
+# carry is built by hand from ICC.1:2010 in `tests/decode.rs`, and the colour path is
+# ours — so generating fixtures with the same crate that reads them is the "generate,
+# do not hand-write" rule rather than an exception to it. The one thing this encoder
+# cannot write, an interlaced image, is a fixture from ImageMagick instead.
+png.workspace = true
+flate2.workspace = true
