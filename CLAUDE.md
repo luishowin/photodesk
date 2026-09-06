@@ -39,7 +39,7 @@ Two things it dragged in. **Stage 13 now has a shader** — `tests/renderer/shad
 
 **The front end has no framework** (2026-09-06, §10.3): TypeScript and Vite, zero runtime dependencies. Don't add React or a component library to make a panel easier — §11's slider contract is the reason the decision went this way, and a library's slider would be overridden rather than used. Panels, undo, focus and the keymap are hand-written by design.
 
-**Where the work is.** All of Phase 0 sits on the branch **`spike-a-fork-audit`**, ten commits, nothing pushed — `main` is still at the pre-code commit and tracks `origin/main`. The branch name is left over from when it held only Spike A and is now misleading: it carries all three spikes, the front-end decision, the HEVC findings, the real-photo verification, the export gamut policy and the webkit2gtk-4.1 confirmation. Rename it or merge to `main` before pushing; don't assume `main` reflects any of this.
+**Where the work is.** All of Phase 0 is on **`main`** and pushed (2026-09-06). The `spike-a-fork-audit` branch was fast-forwarded into it and is now redundant — it points at the same history, and its name was left over from when it held only Spike A. Delete it whenever; nothing depends on it.
 
 ## Things that will bite
 
