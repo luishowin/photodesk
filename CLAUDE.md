@@ -56,13 +56,38 @@ The four devel packages are installed. **`npm run build` is not optional and the
 
 `npm run dev` still serves the page for looking at chrome and layout without a photograph; `ipc.ts` says so in a sentence rather than failing with a `TypeError`.
 
+### What has actually been run
+
+Worth its own list, because this session's lesson is that a green suite and a working
+application are different claims (see the black canvas, below).
+
+**Verified by measurement.** Decode, graph compile, render and export headless (134
+tests). The front end's own modules rendering identically to wgpu inside Tauri's webview
+— max 0 of 255 over 12,288 channels. And the presented canvas containing the photograph
+rather than nothing, which is `preview.diagnose()`'s centre pixel and the reason it is
+kept.
+
+**Verified by a synthetic drag** in a mocked-IPC harness: a slider moves, the document
+changes, the picture follows.
+
+**Never run, by a test or by a person.** These are the paths to be suspicious of:
+
+- **`export_image` and `save_sidecar`.** No test invokes either, and nobody has pressed
+  `Ctrl+E`. The Rust underneath both is well tested; the command wrappers and the file
+  dialogs around them are not, and the last bug lived in exactly that layer.
+- **`Space` and `\`** — hold-for-original and the before/after split, including whether
+  the seam following the pointer is right (§11 specifies the first and is silent on the
+  second).
+- **`Ctrl+Z` / `Ctrl+Shift+Z`** through the UI.
+- **A HEIC.** §1's native subject, and every photograph opened so far has been a JPEG.
+
 ### What's next
 
 **v0.2 — crop, rotate, straighten; presets; undo/redo at gesture granularity.** Undo already commits per gesture (`src/document/history.ts`); what v0.2 adds is the panel and the geometry node, which `src/graph/execute.ts` currently refuses **by name**.
 
 Open and worth doing before it:
 
-- **The six sliders have never been dragged over a real photograph by a person.** Everything is measured, and measurement is not the same as use — §11's feel (0.1× travel on `Shift`, where the numeric entry lands, whether the split handle wants to be sticky) is a thing to sit with rather than assert.
+- **Use it.** The list above is the honest state; §11's feel — 0.1× travel on `Shift`, where the numeric entry lands, whether the split handle should be sticky — is a thing to sit with rather than assert, and the untested commands want one pass by hand before v0.2 builds on them.
 - **§16 #7's icon** is a placeholder, marked as one.
 - **§16 #16** — the register's UI half now exists in `src/panels/light.ts`; whether the *file* has an opinion about ranges is still open, due before v0.2's presets.
 - #18 (tiled export) and #19 (HEIF output) still wait.
