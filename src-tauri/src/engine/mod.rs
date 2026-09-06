@@ -13,3 +13,4 @@ pub mod decode;
 pub mod gamut;
 pub mod icc;
 pub mod image;
+pub mod render;

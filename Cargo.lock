@@ -798,9 +798,11 @@ dependencies = [
  "half",
  "jpeg-decoder",
  "libheif-rs",
+ "pollster",
  "serde",
  "serde_json",
  "ts-rs",
+ "wgpu",
 ]
 
 [[package]]

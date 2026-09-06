@@ -103,8 +103,13 @@ pub const ADJUST_WGSL: &str = include_str!("../shaders/adjust.wgsl");
 
 /// §5 stage 13 — the output encode, with §16 #11's gamut policy in it.
 ///
+/// **The product's shader, not the spike's.** It lives in `shaders/photodesk/`, which
+/// §13 names as the one shader source, and this crate reads it from there — so the
+/// lowering and agreement tests below are about the shader that ships rather than
+/// about a copy that happens to look like it.
+///
 /// A separate source from [`ADJUST_WGSL`] because it is a separate pass, not a
 /// separate *path*: stage 13 runs once at the end of the chain while stages 2–12 run
 /// once per layer (§5), and §0's one-shader-source invariant is about preview and
 /// export sharing a source, not about the whole pipeline being one file.
-pub const ENCODE_WGSL: &str = include_str!("../shaders/encode.wgsl");
+pub const ENCODE_WGSL: &str = include_str!("../../../shaders/photodesk/encode.wgsl");

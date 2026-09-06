@@ -657,3 +657,69 @@ Fedora ships libheif without HEVC, so §1's native subject does not open on a st
 ### Opened
 
 **§16 #17 — PNG, and therefore screenshots.** §1 names a screenshot as a native subject and §4 gives it a colour rule; v0.1 decodes HEIF and JPEG, so that rule is currently exercised by an untagged JPEG rather than by the file it was written for. One decoder against a colour path that already exists.
+
+---
+
+## 2026-09-06 — v0.1's render path, and §12.2 measured; spec v0.16 → v0.17
+
+A compiled graph now renders. `engine/render.rs`, `shaders/photodesk/{adjust,encode}.wgsl`, 8 tests. The workspace is at 110.
+
+### The product's shaders exist, and the spike's stay a spike
+
+§13 names `shaders/photodesk/` as "the only shader source". Until now it was empty and the two WGSL files lived in `tests/renderer/shaders/` — but `encode.wgsl` was never a spike artefact, it was §16 #11's stage 13 written in the wrong place. It has moved, and the spike's lowering and agreement tests now check the **shipped** shader rather than a copy that happens to look like it.
+
+`adjust.wgsl` is new, and is not Spike C's. That one was built to be *hostile* to naga — a large uniform block, dynamic indexing, a data-dependent loop, a switch — because §2.3's question was whether a realistic pass could lower at all. The product's implements what `adjust` at `op_version` 1 actually carries: the nine scalars of §5 stages 2–5 and 9. **Stages 6, 7 and 8 are absent and keep their numbers**, because §5's ordering is the frozen contract and a version that does not carry a stage runs identity there — the same thing §6.1 already says about an omitted key.
+
+### There is no CPU renderer, and there will not be one
+
+The obvious way to test a GPU renderer is to write the same maths in Rust and compare. That is exactly what §0 freezes against: two implementations of one pipeline drift, undiscoverably, because both look right alone. So the shaders are the only description of what a pixel goes through, and correctness is established the way the specification says — by rendering the same document two ways.
+
+Two constants in `adjust.wgsl` are the exception that proves it. Linear Display P3's luminance weights and its XYZ matrix are hardcoded there rather than passed in a uniform, because a uniform would have to be filled by both the exporter and the preview — two places to write one number. A test reads them out of the shader text and compares against the values `colour.rs` derives from chromaticities, so the copy cannot drift.
+
+### §12.2, and two wrong diagnoses before the right one
+
+> Render the same document at proxy and at full-res-downsampled-to-proxy. Assert they match within threshold. **This is the test that enforces the one-shader-source invariant. Without it the invariant is a comment.**
+
+`adjust` v1 has none of the spatial stages §12.2's carve-outs are written for, so the expectation was near-exact agreement. The first run said **57 codes with no adjustment at all**.
+
+- *First diagnosis: the adjustment chain does not commute with the average.* Wrong — the control with an identity document was just as bad.
+- *Second: it is clipping.* That predicted the disagreement would sit at the rails. Splitting the measurement showed 56 codes **away** from them and 8.6 at them, so also wrong.
+- *Third, and it holds:* **the gamut map.** §16 #11's constant-luminance chroma clip is not linear, and a quick two-pixel check off to the side put a number on it — one neighbour outside sRGB and one inside is worth ~18 codes by itself.
+
+So the threshold cannot be a number; it has to be stated against a **precondition**. There are exactly two ways the paths can differ, and a fixture that violates either stops being a regression test and becomes a measurement of an inherent property:
+
+1. **Detail finer than the proxy**, which makes `mean` lossy, so `f∘mean ≠ mean∘f` for any non-linear `f`.
+2. **Content outside the destination gamut**, where the map has a derivative discontinuity at the boundary — averaging across that kink diverges even on perfectly smooth content.
+
+| content | worst | mean |
+|---|---|---|
+| band-limited **and** in-gamut | **0.1486** | 0.0355 |
+| detail finer than the proxy, full chain | 152.53 | 11.31 |
+| the same detail, stage 13 alone | 107.86 | 3.27 |
+
+*8-bit codes, 256² reduced to 64².* With both preconditions held the two paths have no way to disagree, and they do not — 0.15 of a code is the RGBA16F attachment's own truncation, which `encode_stage.rs` already characterised. That is where the bar sits, and a spatial stage that broke it would show up there first.
+
+The preconditions are **asserted in the fixture**, not assumed: if the band-limited image ever drifts near a rail the test says so, because otherwise the bar would quietly stop being about the renderer.
+
+The rest is inherent to proxy editing, every editor since 2007 has it, and it is not a lie the user can see — §7.1 sizes the proxy at twice the viewport, so detail the proxy cannot hold is detail the screen cannot show.
+
+### The sliders, and what is a choice
+
+Six of the nine parameters are v0.1's controls. Each has a stated formulation and several are choices rather than facts, so §16 #4 now names them: contrast is a gain about 18% grey **in linear light**; stage 4's three controls are weighted on *perceptual* rather than linear luminance, because 0.5 linear is 73% encoded and thresholds in linear would put "midtone" up among the highlights; vibrance measures existing chroma relative to brightness so a saturated shadow counts as saturated.
+
+**White balance is the one that took work.** Temperature is a Kelvin delta (forced by §5 — the stack is the loop, so two layers each declaring an absolute 5200 K would describe nothing), applied as a von Kries scaling between two points on the CIE daylight locus. Two properties are tested rather than hoped for:
+
+- **Its zero is exactly the identity.** The gain is the ratio of the target white to *the locus evaluated at the reference*, not to D65's defined chromaticity — so a temperature of 0 gives 1.0 per channel rather than something within a thousandth of it. A stack of nine untouched sliders moves the picture by less than 10⁻⁵.
+- **It does not change brightness.** The gain is normalised against the working space's luminance weights, measured at 0.17984 against 0.18 across ±2000 K. §11 gives each control one job and brightness is exposure's.
+
+The formulations are where §12.1's golden images will earn their keep, which is why they are named in §16 #4 rather than left as shader comments.
+
+### What is refused
+
+`geometry` (v0.2), `composite` (layer opacity and masks, v0.4) and the four mask node kinds are **named errors**, not skips. Rendering a masked document without its mask produces a picture that looks plausible and is wrong, which is the same reason §6.3 rejects an unknown `op` rather than ignoring it.
+
+The renderer asks for `downlevel_webgl2_defaults` rather than what the adapter offers, so a graph that exports is a graph the preview can run. Asking for more would let the export path succeed on something the webview refuses — the WYSIWYG drift §0 freezes against, arriving through the back door.
+
+### Not yet
+
+Full-resolution export wants **tiling** (§7.1) and this renders whole images. At proxy — where §12.2's comparison and the entire preview path live — whole-image is what is wanted anyway. Node textures are released as soon as their last consumer has run, which is what keeps §7.3's 512 MB plausible: holding every intermediate of a six-layer masked graph at 12 MP would be 1.4 GB.

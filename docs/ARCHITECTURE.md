@@ -1,6 +1,6 @@
 # PhotoDesk — Architecture Specification
 
-**Version:** 0.16
+**Version:** 0.17
 **Author:** Luis Howin
 **Platform:** Fedora Workstation / GNOME
 **Status:** Master spec for the coding agent. **Phase 0 complete.**
@@ -50,6 +50,7 @@ This table is the contract. Anything not listed is undecided and needs a decisio
 | **Export gamut mapping = clip chroma at constant luminance** | **FROZEN** | Measured (§4, `tests/color/tests/gamut_policy.rs`). The clip's error has no policy — how much lightness a colour loses depends on which channel ran out first, up to 2.8 L\*. This one's error is *stated*: L\* is exact by construction, chroma is what gets spent. On a real photograph it halves the adjacent pixel pairs that merge into one colour, for zero cost inside the gamut and the same handful of ALU ops. |
 | **Stage 13 runs the gamut map in the fragment shader** | **FROZEN** | Corollary of "one shader source, preview and export": the preview gamut-maps every frame to the display, so a policy that needs a per-pixel search is not adoptable whatever its colorimetry. Checked, not assumed — `shaders/encode.wgsl` lowers to GLSL ES 3.00 and agrees with the Rust reference to one colour-attachment step (`tests/renderer/tests/encode_stage.rs`). |
 | **The document schema's home is Rust; the TypeScript types are generated from it** | **FROZEN** | §12.3's source preservation and §12.1's golden images have to run headless on every commit — which is criterion 1 of the gate Spike A failed RapidRAW on, and a schema reachable only through the webview fails it the same way. A hand-written TypeScript twin would make "one schema" untestable exactly as a hand-written GLSL twin would have made "one shader source" untestable, so the front end reads generated declarations (`src/document/generated/`, committed, staleness caught by a test). |
+| **Proxy and export agree exactly only on band-limited, in-gamut content** | **FROZEN as a property** | Measured (§12.2, `src-tauri/tests/render.rs`). Under both conditions the two paths differ by **0.15 of an 8-bit code**; with detail finer than the proxy, by **152**, of which 108 is the gamut map alone. Neither is a defect — a non-linear chain does not commute with an average, and §16 #11's map has a kink at the gamut boundary. §12.2's thresholds have to be stated against the preconditions rather than against a number. |
 | **ICC profiles are parsed in-tree, not by lcms2** | **FROZEN** | The code deciding how a photograph is interpreted should be code this project can read, and the harness should be able to disagree with it — `tests/color/` checks this parser against lcms2 over the same bytes and they agree to **7.4 × 10⁻⁹**. Same "two links, both tested" arrangement §2.2 uses for ΔE2000 and the matrices, and it keeps a C library off the shipping path for eighty lines of byte reading. |
 | **A profile that is neither sRGB nor Display P3 is refused, not rounded** | **FROZEN** | §4 handles two spaces and the register says a third is a decision, not a value. Classified on the whole 3×3 colorant matrix after Bradford D50→D65, tolerance 0.02 — derived, not chosen: Adobe RGB sits 0.0901 from Display P3 and *nearer to it than to sRGB*, so a threshold on the red colorant alone reads Adobe RGB as Display P3, which is a silent wrong colour on a profile people have. |
 | **The graph is compiled once, in Rust; both renderers execute the same plan** | **FROZEN** | Corrects §13, which puts "DAG compile" in the front end. The preview runs in the webview and the export runs through wgpu (§7.2) — two compilers would render two topologies and drift exactly as two shader sources would, with §12.2 then comparing two *compilations* rather than two executions of one plan. The one-shader-source invariant would be enforced over the shader while the graph above it went unchecked. `src/graph/` is the plan's executor. |
@@ -740,6 +741,22 @@ Render the same document at proxy and at full-res-downsampled-to-proxy. Assert t
 
 This is the test that enforces the one-shader-source invariant. Without it the invariant is a comment.
 
+**Measured at v0.1, before there are any spatial stages, and the number was not the expected one.** With `adjust` at `op_version` 1 the chain is per-pixel only, so the naive expectation is near-exact agreement. It is not, and two wrong diagnoses were reached before the right one — the first attributed it to the adjustment chain, the second to clipping at the rails, and the disagreement turned out to sit *away* from the rails with no adjustment applied at all.
+
+**It is the gamut map.** Proxy editing computes `f(mean(pixels))` where export computes `mean(f(pixels))`, and §16 #11's constant-luminance chroma clip is emphatically not linear: two neighbouring pixels, one outside sRGB and one inside, are worth about 18 codes of disagreement on their own. Every gamut policy has this, the per-channel clip included.
+
+So the threshold has to be stated against a **precondition**, not as a number:
+
+| content | worst | mean |
+|---|---|---|
+| band-limited **and** in-gamut | **0.1486** | 0.0355 |
+| detail finer than the proxy, full chain | 152.53 | 11.31 |
+| the same detail, stage 13 alone | 107.86 | 3.27 |
+
+*8-bit codes, 256² reduced to 64².* Under both preconditions — no detail the reduction loses, nothing outside the destination gamut — `mean` is the identity and the chain is smooth, so the two paths have no way to disagree and they do not: 0.15 of a code is the RGBA16F attachment's own truncation. That is where §12.2's bar belongs, and a spatial stage that broke it would show up there first.
+
+The rest is inherent to proxy editing rather than a defect, every editor since 2007 has it, and it is **not a lie the user can see**: §7.1 sizes the proxy at twice the viewport, so detail the proxy cannot hold is detail the screen cannot show, and zooming in makes the proxy finer.
+
 **Spatial stages need a stated policy or this test fails by construction.** Stages 10–12 are resolution-dependent by nature: a 32-pixel sharpening halo covers a different fraction of a 2 MP proxy than of a 12 MP source, and grain rendered at full resolution then downsampled averages away to nothing while grain rendered at proxy stays visible. Left unaddressed, the test goes red on day one, gets muted in week three, and §12.2's own closing sentence comes true. So:
 
 | Rule | Consequence |
@@ -791,13 +808,16 @@ photodesk/
 │   │   ├── icc.rs              ← reading an embedded profile; §4's two spaces or an error
 │   │   ├── decode.rs           ← §5 stage 0: a file becomes linear P3 f16
 │   │   ├── gamut.rs            ← §16 #11's export policy
-│   │   └── image.rs            ← the working buffer, and §7.1's proxy resample
+│   │   ├── image.rs            ← the working buffer, and §7.1's proxy resample
+│   │   └── render.rs           ← executes a compiled graph through wgpu (§7.2)
 │   ├── photodesk/              ← document → engine bridge, IO, cache, export
 │   │   ├── document/           ← the schema: model, validation, migration
 │   │   ├── graph/              ← §6.2's DAG compile and dirty tracking
 │   │   └── sidecar.rs          ← where it sits on disk, and how it is written
 │   └── ai/                     ← provider registry, routing
 ├── shaders/photodesk/          ← WGSL source of truth. The only shader source (Spike A gate failed)
+│   ├── adjust.wgsl             ← §5 stages 2–9 for one layer, fused (§7.3)
+│   └── encode.wgsl             ← §5 stage 13, with §16 #11's gamut policy
 ├── providers/                  ← LocalCpu, RemoteHttp, ComfyUI, LocalGpu
 ├── tests/
 │   ├── golden/                 ← corpus + blessed references
@@ -877,7 +897,7 @@ The second is the one that matches §9.4's existing posture — a missing capabi
 | 14 | Golden-image thresholds for HEIC sources, which must clear the ~0.9 ΔE YCbCr floor (§3) | Before the first `--bless` (§12.1) |
 | 16 | Parameter ranges — the document validates finiteness but no bounds, so a `exposure: 400` is a legal document. §11 puts slider travel in the UI; whether the *file* has an opinion is unstated | Before v0.2's presets (§6.1), which is the first thing that writes params the UI did not |
 | 15 | Golden-image thresholds must also allow one colour-attachment step: an RGBA16F attachment can truncate toward zero rather than round (§0 register), which is a full-step bias on every stored channel and not the shader's doing | Before the first `--bless` (§12.1); same conversation as #14 |
-| 4 | Pipeline v1 ordering | Golden-image validation |
+| 4 | Pipeline v1 ordering, **and the formulations inside it** — the six sliders v0.1 ships each have a stated shape (`shaders/photodesk/adjust.wgsl`) and several are choices rather than facts: contrast is a gain about 18% grey in linear light, stages 4's three controls are weighted on *perceptual* rather than linear luminance, vibrance measures existing chroma relative to brightness | Golden-image validation |
 | 5 | Pre-1.0 vs post-1.0 reorder policy | Before v0.2 (§5) |
 | 6 | Remote AI endpoint: self-hosted ComfyUI or gateway | Before v0.5 |
 | 7 | Icon — `PD` monogram or geometric mark, monochrome, no aperture | Whenever; the 16×16 render is the only test |
