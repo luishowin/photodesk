@@ -7,10 +7,17 @@
 //! Spike A established there is no incumbent colour architecture to adapt — RapidRAW
 //! has none at all — so §4 is built from nothing and this harness is what decides
 //! whether it is built on f16.
+//!
+//! **It now tests the product rather than a copy of it.** The spaces, transfer curves,
+//! matrices and gamut policy moved into `photodesk::engine` when the decode path
+//! needed them; what stays here is measurement — ΔE2000, Lab, the corpus, and a model
+//! of the pipeline whose precision is a parameter. Before the move this crate held its
+//! own transforms and validated *those* against lcms2, which is a weaker claim than it
+//! looks: it could have been green while the shipped transforms were wrong, there
+//! being none. The cross-validations now point at the code that runs.
 
-pub mod colour;
 pub mod corpus;
 pub mod delta_e;
-pub mod gamut;
+pub mod lab;
 pub mod working;
 pub mod workload;

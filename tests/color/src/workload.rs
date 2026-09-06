@@ -14,61 +14,13 @@
 //!
 //! The workload is written **once**, generically, and instantiated at both precisions.
 //! Two copies would be free to drift, and a drifting reference measures nothing.
+//!
+//! The `Real` trait it is generic over moved into the product (`engine::colour`) when
+//! the gamut policy did: the policy is written once over the same abstraction, for the
+//! same reason.
 
-/// The minimum float surface the workload needs. Implemented for `f32` and `f64` so
-/// the pipeline and its reference cannot diverge by editing one and not the other.
-pub trait Real: Copy {
-    fn from_f64(v: f64) -> Self;
-    fn to_f64(self) -> f64;
-    fn add(self, o: Self) -> Self;
-    fn sub(self, o: Self) -> Self;
-    fn mul(self, o: Self) -> Self;
-    fn div(self, o: Self) -> Self;
-    fn max(self, o: Self) -> Self;
-    fn min(self, o: Self) -> Self;
-}
 
-macro_rules! impl_real {
-    ($t:ty) => {
-        impl Real for $t {
-            #[inline]
-            fn from_f64(v: f64) -> Self {
-                v as $t
-            }
-            #[inline]
-            fn to_f64(self) -> f64 {
-                self as f64
-            }
-            #[inline]
-            fn add(self, o: Self) -> Self {
-                self + o
-            }
-            #[inline]
-            fn sub(self, o: Self) -> Self {
-                self - o
-            }
-            #[inline]
-            fn mul(self, o: Self) -> Self {
-                self * o
-            }
-            #[inline]
-            fn div(self, o: Self) -> Self {
-                self / o
-            }
-            #[inline]
-            fn max(self, o: Self) -> Self {
-                <$t>::max(self, o)
-            }
-            #[inline]
-            fn min(self, o: Self) -> Self {
-                <$t>::min(self, o)
-            }
-        }
-    };
-}
-
-impl_real!(f32);
-impl_real!(f64);
+use photodesk::engine::colour::Real;
 
 /// What one render pass does to a pixel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

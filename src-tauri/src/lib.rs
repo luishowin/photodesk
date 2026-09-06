@@ -5,7 +5,7 @@
 //! before it gives it a window, and every one of those has to run headless.
 //!
 //! Layout follows §13: `photodesk/` is the document bridge, IO, cache and export;
-//! `engine/` will be the render core; `ai/` the provider registry. The two that do not
-//! exist yet do not exist yet.
+//! `engine/` is the render core; `ai/` the provider registry, which does not exist yet.
 
+pub mod engine;
 pub mod photodesk;

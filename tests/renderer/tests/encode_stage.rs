@@ -21,14 +21,15 @@
 //!    that compiles and computes something slightly different is precisely the
 //!    WYSIWYG drift §0 freezes against, wearing a build step as a disguise.
 //!
-//! The reference is imported rather than transcribed. A second copy of the maths
-//! could agree with itself and be wrong, which is the mistake `tests/color/`'s "one
-//! workload definition, not two" rule already exists to prevent.
+//! The reference is imported rather than transcribed, and since the colour code moved
+//! into `photodesk::engine` it is the *shipped* policy rather than a harness copy of
+//! it. A second copy of the maths could agree with itself and be wrong, which is the
+//! mistake `tests/color/`'s "one workload definition, not two" rule already prevents.
 
 use half::f16;
 use naga::ShaderStage;
-use photodesk_color::colour::{LINEAR_P3, SRGB};
-use photodesk_color::gamut::{GamutPolicy, luma_weights};
+use photodesk::engine::colour::{LINEAR_P3, SRGB};
+use photodesk::engine::gamut::{GamutPolicy, luma_weights};
 use photodesk_renderer_spike::{ENCODE_WGSL, to_glsl_es300};
 use wgpu::util::DeviceExt;
 

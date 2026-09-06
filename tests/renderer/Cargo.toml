@@ -15,8 +15,8 @@ wgpu.workspace = true
 half.workspace = true
 pollster.workspace = true
 bytemuck.workspace = true
-# Stage 13's gamut policy has a reference implementation in the colour harness
-# (§16 #11). `encode_stage.rs` checks the shader against it rather than against a
-# second transcription of the same maths, which is the mistake the harness's own
-# "one workload definition, not two" rule exists to prevent.
-photodesk-color = { path = "../color" }
+# Stage 13's gamut policy is implemented in the render core (§16 #11).
+# `encode_stage.rs` checks the shader against the shipped code rather than against a
+# second transcription of the same maths, which is the mistake the colour harness's
+# own "one workload definition, not two" rule exists to prevent.
+photodesk = { path = "../../src-tauri" }

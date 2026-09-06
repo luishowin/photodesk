@@ -38,9 +38,7 @@
 //! Written once, generically over [`Real`], and instantiated at f32 and f64 for the
 //! same reason the workload is: two copies of a policy are two policies.
 
-use crate::colour::{Space, linear_to_lab};
-use crate::delta_e::ciede2000;
-use crate::workload::Real;
+use super::colour::{Real, Space};
 
 /// **The policy §4 exports under — §16 #11, frozen 2026-09-06.** One named constant,
 /// so the decision has a home rather than living as a `clamp` inside `emit`.
@@ -264,46 +262,4 @@ fn clamp_cube<T: Real>(c: [T; 3]) -> [T; 3] {
 /// what makes `(grey, grey, grey)` have luminance `grey`.
 pub fn luma_weights(space: &Space) -> [f64; 3] {
     space.to_xyz().0[1]
-}
-
-// ------------------------------------------------------------------------ control
-
-/// The nearest in-gamut colour under ΔE2000 — **a control, not a candidate.**
-///
-/// It answers the question that decides how to read every other number here: if the
-/// goal were "move the colour as little as possible", what would win? The answer is a
-/// per-pixel search over the destination cube, which is not a thing a fragment shader
-/// can do at 60 fps and not a thing anyone would want if it could — it flattens
-/// gradients as thoroughly as the clip does, because the nearest in-gamut colour to
-/// everything outside the gamut is on the boundary.
-///
-/// Local search by coordinate descent from the clip, with a shrinking step. It can in
-/// principle stop short of the global optimum; that costs nothing here, because its
-/// job is to *beat the shippable policies on ΔE*, and a local minimum that already
-/// does so makes the point a global one could only make harder.
-pub fn nearest_in_gamut_lab(c: [f32; 3], dst: &Space) -> [f32; 3] {
-    let target = linear_to_lab(c, dst);
-    let mut best = GamutPolicy::ClipLinear.map_with(c, luma_weights(dst));
-    let mut best_d = ciede2000(target, linear_to_lab(best, dst));
-
-    let mut step = 0.25f32;
-    while step > 1.0e-4 {
-        let mut improved = false;
-        for axis in 0..3 {
-            for dir in [-1.0f32, 1.0] {
-                let mut candidate = best;
-                candidate[axis] = (candidate[axis] + dir * step).clamp(0.0, 1.0);
-                let d = ciede2000(target, linear_to_lab(candidate, dst));
-                if d < best_d - 1.0e-12 {
-                    best_d = d;
-                    best = candidate;
-                    improved = true;
-                }
-            }
-        }
-        if !improved {
-            step *= 0.5;
-        }
-    }
-    best
 }

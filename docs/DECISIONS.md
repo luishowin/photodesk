@@ -587,3 +587,73 @@ And compiling a document written under an older `pipeline_version` is an **error
 `NodeKind::MaskCompose(MaskOp)` — an internally-tagged newtype variant holding a *string* — compiles, generates plausible TypeScript, and **fails at run time** the first time a two-component mask is keyed, because serde cannot serialise that shape. It is now a struct variant. The key builder hashes `serde_json::to_vec(kind)` rather than a hand-written encoder, deliberately, so that a field added to a node kind is covered by the key automatically; the cost of that choice is that a serialisation failure becomes a panic, and this is the shape that produces one.
 
 The binding-staleness test now covers **both** generated files. It covered one, which is a guard that lets the other rot — the failure it exists to prevent.
+
+---
+
+## 2026-09-06 — v0.1's decode path; spec v0.15 → v0.16
+
+§5 stage 0: a photograph on disk becomes linear Display P3 f16 in memory. `engine/{colour,icc,decode,image,gamut}`, 20 new tests, 102 in the workspace.
+
+### The move that had to happen first
+
+**Spike B's harness was validating a copy.** The spaces, transfer curves, matrices and gamut policy lived in `tests/color/`, because when they were written there was no product to put them in — so `tests/color/` cross-validated *its own* transforms against lcms2. That is a weaker claim than it looks. The suite could have been green while the shipped transforms were wrong, for the simple reason that there were none.
+
+They now live in `engine/`, and the harness imports them. What stays behind is measurement: ΔE2000, Lab, the corpus, and the pipeline model whose precision is a parameter. The split is on "does a photograph go through this?" — Lab does not, and §1's non-goals are emphatic enough about soft-proofing that shipping unused colour science invites somebody to use it. The `nearest_in_gamut_lab` control went with it, which is where a control belongs.
+
+`tests/renderer/`'s stage-13 agreement test now checks the shader against the **shipped** gamut policy rather than a harness copy of it. That was already the intent; it is now the fact.
+
+### ICC is parsed in-tree, and the trap is the connection space
+
+**FROZEN: profiles are parsed here, not by lcms2.** The same argument the harness makes about matrices — derive rather than copy — applies to the code that decides how a photograph is interpreted: it should be code this project can read, and the harness should be able to disagree with it. `tests/color/tests/decode_path.rs` checks this parser against lcms2 reading the same bytes:
+
+```
+sRGB       lcms2 red colorant (D50) [0.4360, 0.2225,  0.0139]
+           adapted to D65           [0.4124, 0.2126,  0.0193]   ours identical to 7.4e-9
+Display P3 lcms2 red colorant (D50) [0.5151, 0.2412, -0.0011]
+           adapted to D65           [0.4866, 0.2290, -0.0000]   ours identical to 7.1e-9
+```
+
+That D50 value for Display P3 — (0.5151, 0.2412, −0.0011) — is exactly what §4 recorded from a real iPhone profile, so the parser reads Apple's files the way the earlier measurement did.
+
+**The trap is that ICC colorants are in the profile connection space, which is D50.** Display P3's red primary at D65 is (0.4866, 0.2290, 0.0000); the tag says (0.5151, 0.2412, −0.0011). Comparing the tag against a D65-derived matrix finds neither of §4's spaces and rejects every photograph the application exists to open. Bradford adaptation runs before any comparison.
+
+### The tolerance is derived, and a threshold would have been wrong
+
+**FROZEN: a profile that is neither of §4's two spaces is refused, not rounded to the nearest.** Classification is on the whole 3×3 colorant matrix, at a tolerance of 0.02, and both of those are consequences rather than preferences:
+
+| pair | largest component gap |
+|---|---|
+| sRGB ↔ Display P3 | 0.0934 |
+| **Display P3 ↔ Adobe RGB** | **0.0901** |
+| sRGB ↔ Adobe RGB | 0.1720 |
+| sRGB ↔ ProPhoto | 0.3854 |
+
+**Adobe RGB is nearer to Display P3 than sRGB is.** It shares sRGB's red and blue primaries, so the obvious classifier — a threshold on the red colorant, which is what §4's own measurement note and `real_photos.rs` both use — reads Adobe RGB as Display P3. That is a silent wrong colour on a profile people actually have, and there is a test named for it. At 0.02 a profile must be less than a quarter of the way from P3 to Adobe RGB to be accepted as P3, while the tags' own quantisation (s15Fixed16, 1.5 × 10⁻⁵) sits three orders of magnitude below.
+
+The tone curve is checked as well. Primaries are half of a space: Display P3's primaries with a 1.8 gamma is not Display P3, and both of §4's spaces use the sRGB curve — Display P3 uses it rather than DCI's 2.6 gamma, which `colour.rs` already flags as a ~4 ΔE error that looks like a gamut problem.
+
+### The decode, measured against a container rather than a mock
+
+The 24 ColorChecker patches encoded as Display P3, written into every container this machine can produce, then opened by the product knowing nothing about how they were made:
+
+```
+uncompressed   decode -> working space -> encode: max ΔE 0.0314  mean 0.0067
+AV1 (AVIF)                                        max ΔE 0.9048  mean 0.2940
+HEVC (HEIC)                                       max ΔE 0.9048  mean 0.2940
+```
+
+**That reproduces §3's YCbCr conversion floor** — measured independently at 0.9041 max, 0.2920 mean — through the product's decoder this time rather than the harness's, and the uncompressed container avoids it as it did before. The floor is inherent, the product hits exactly it, and §12.1's thresholds now have a number measured through the code that will be under test.
+
+### §16 #13's decode half is done
+
+Fedora ships libheif without HEVC, so §1's native subject does not open on a stock install and the symptom is three layers from the cause. The decoder consults libheif's codec list **before** it reads, against the container's own `ftyp` brand — so an AVIF in a `.heic` is checked for AV1 rather than HEVC — and a missing one is `MissingCodec` naming `libheif-freeworld`. A truncated file is still `Broken`, and telling those two apart is the whole of the item. The packaging clause itself is still open.
+
+### Two things the tests found
+
+**A grey fixture cannot tell sRGB from Display P3.** The first version of the "an untagged file is sRGB and a tagged one is read" test used a flat mid-grey JPEG and asserted the two interpretations differ. They do not, and cannot: **a neutral is neutral in every RGB space sharing a white point**, so (128, 128, 128) read either way lands on the same working-space value to the last bit. The test now uses a saturated red, and the grey fixture proves the complementary thing — that a neutral stays neutral.
+
+**Hand-rolling a fixture for a format with tables in it is a bad trade.** The first minimal JPEG was written by hand and rejected with "invalid length in DHT". It is now 629 bytes generated once by Pillow and inlined, which is what a decoder test needs: a file a real decoder accepts.
+
+### Opened
+
+**§16 #17 — PNG, and therefore screenshots.** §1 names a screenshot as a native subject and §4 gives it a colour rule; v0.1 decodes HEIF and JPEG, so that rule is currently exercised by an untagged JPEG rather than by the file it was written for. One decoder against a colour path that already exists.

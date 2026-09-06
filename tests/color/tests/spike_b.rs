@@ -10,7 +10,8 @@
 
 use lcms2::{CIELab, CIELabExt, CIExyY, CIExyYTRIPLE, Intent, PixelFormat, Profile, ToneCurve,
             Transform};
-use photodesk_color::colour::{DISPLAY_P3, SRGB, Space, encoded_to_lab};
+use photodesk::engine::colour::{DISPLAY_P3, SRGB, Space};
+use photodesk_color::lab::encoded_to_lab;
 use photodesk_color::corpus::{
     self, COLORCHECKER_SRGB, deep_shadow_ramp, untagged_screenshot, wide_gamut_gradient,
 };

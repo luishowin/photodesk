@@ -22,6 +22,9 @@ license.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 blake3.workspace = true
+half.workspace = true
+libheif-rs.workspace = true
+jpeg-decoder.workspace = true
 
 [dev-dependencies]
 ts-rs.workspace = true

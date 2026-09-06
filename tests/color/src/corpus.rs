@@ -6,7 +6,7 @@
 //! arrived on 2026-09-06. [`BLOCKED`] is the mechanism that made the gap visible in
 //! code rather than only in a document; it is kept, and empty.
 
-use crate::colour::{DISPLAY_P3, SRGB, Space, Transfer};
+use photodesk::engine::colour::{DISPLAY_P3, SRGB, Space, Transfer};
 
 /// The 24 ColorChecker patches as 8-bit sRGB (BabelColor average values).
 ///

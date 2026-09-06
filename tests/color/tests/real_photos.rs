@@ -18,7 +18,8 @@
 //! default is `keep-minus-gps`, and a test log is not the place to leak a location.
 
 use libheif_rs::{ColorProfile, ColorSpace, HeifContext, ImageHandle, LibHeif, RgbChroma};
-use photodesk_color::colour::{DISPLAY_P3, SRGB, Space, encoded_to_lab};
+use photodesk::engine::colour::{DISPLAY_P3, SRGB, Space};
+use photodesk_color::lab::encoded_to_lab;
 use photodesk_color::corpus::{corpus_dir, find_heic, find_jpeg};
 use photodesk_color::delta_e::{DeltaStats, ciede2000};
 use photodesk_color::working::{Pipeline, Precision};

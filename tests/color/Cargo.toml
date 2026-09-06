@@ -9,6 +9,8 @@ license.workspace = true
 
 [dependencies]
 half.workspace = true
+# The suite tests the product's colour code, not a copy of it. See src/lib.rs.
+photodesk = { path = "../../src-tauri" }
 
 [dev-dependencies]
 lcms2.workspace = true

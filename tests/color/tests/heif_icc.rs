@@ -12,7 +12,8 @@ use libheif_rs::{
     Channel, ColorProfile, ColorProfileRaw, ColorSpace, CompressionFormat, EncoderQuality,
     HeifContext, Image, LibHeif, RgbChroma, color_profile_types,
 };
-use photodesk_color::colour::{DISPLAY_P3, SRGB, encoded_to_lab};
+use photodesk::engine::colour::{DISPLAY_P3, SRGB};
+use photodesk_color::lab::encoded_to_lab;
 use photodesk_color::corpus::{self, COLORCHECKER_SRGB};
 use photodesk_color::delta_e::{DeltaStats, ciede2000};
 use photodesk_color::working::{Pipeline, Precision};

@@ -30,12 +30,13 @@
 //! Run with `cargo test -p photodesk-color --test gamut_policy -- --nocapture`.
 
 use lcms2::{CIExyY, CIExyYTRIPLE, Intent, PixelFormat, Profile, ToneCurve, Transform};
-use photodesk_color::colour::{DISPLAY_P3, SRGB, Space, encoded_to_lab, linear_to_lab};
+use photodesk::engine::colour::{DISPLAY_P3, SRGB, Space};
+use photodesk_color::lab::{encoded_to_lab, linear_to_lab, nearest_in_gamut_lab};
 use photodesk_color::corpus::{
     self, COLORCHECKER_SRGB, gamut_boundary_ramps, untagged_screenshot, wide_gamut_gradient,
 };
 use photodesk_color::delta_e::{DeltaStats, ciede2000};
-use photodesk_color::gamut::{GamutPolicy, luma_weights, nearest_in_gamut_lab};
+use photodesk::engine::gamut::{GamutPolicy, luma_weights};
 
 /// The shippable candidates, at the knees the sweep below covers.
 ///

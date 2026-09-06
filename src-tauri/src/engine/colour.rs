@@ -27,7 +27,7 @@ impl Xy {
 pub const D65: Xy = Xy::new(0.3127, 0.3290);
 
 /// An RGB colour space: three primaries, a white point, and a transfer function.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Space {
     pub name: &'static str,
     pub red: Xy,
@@ -114,7 +114,7 @@ impl Transfer {
 }
 
 /// A row-major 3x3 matrix. Built in f64, applied in f32.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mat3(pub [[f64; 3]; 3]);
 
 impl Mat3 {
@@ -218,49 +218,62 @@ impl Space {
     }
 }
 
-/// CIE XYZ (D65-relative, Y in [0,1]) -> CIE L*a*b*.
-pub fn xyz_to_lab(xyz: [f64; 3]) -> [f64; 3] {
-    let w = D65.to_xyz();
-    let f = |t: f64| {
-        const DELTA: f64 = 6.0 / 29.0;
-        if t > DELTA * DELTA * DELTA {
-            t.cbrt()
-        } else {
-            t / (3.0 * DELTA * DELTA) + 4.0 / 29.0
+/// The minimum float surface a per-pixel operation needs, implemented for `f32` and
+/// `f64`.
+///
+/// Here rather than in the harness because the gamut policy is generic over it, and
+/// the policy ships. Its purpose is the harness's own rule — write the maths **once**
+/// and instantiate it at both precisions, because two copies are free to drift and a
+/// drifting reference measures nothing.
+pub trait Real: Copy {
+    fn from_f64(v: f64) -> Self;
+    fn to_f64(self) -> f64;
+    fn add(self, o: Self) -> Self;
+    fn sub(self, o: Self) -> Self;
+    fn mul(self, o: Self) -> Self;
+    fn div(self, o: Self) -> Self;
+    fn max(self, o: Self) -> Self;
+    fn min(self, o: Self) -> Self;
+}
+
+macro_rules! impl_real {
+    ($t:ty) => {
+        impl Real for $t {
+            #[inline]
+            fn from_f64(v: f64) -> Self {
+                v as $t
+            }
+            #[inline]
+            fn to_f64(self) -> f64 {
+                self as f64
+            }
+            #[inline]
+            fn add(self, o: Self) -> Self {
+                self + o
+            }
+            #[inline]
+            fn sub(self, o: Self) -> Self {
+                self - o
+            }
+            #[inline]
+            fn mul(self, o: Self) -> Self {
+                self * o
+            }
+            #[inline]
+            fn div(self, o: Self) -> Self {
+                self / o
+            }
+            #[inline]
+            fn max(self, o: Self) -> Self {
+                <$t>::max(self, o)
+            }
+            #[inline]
+            fn min(self, o: Self) -> Self {
+                <$t>::min(self, o)
+            }
         }
     };
-    let fx = f(xyz[0] / w[0]);
-    let fy = f(xyz[1] / w[1]);
-    let fz = f(xyz[2] / w[2]);
-    [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
 }
 
-/// Encoded RGB in `space` -> CIE L*a*b*, for measurement only.
-pub fn encoded_to_lab(rgb: [f32; 3], space: &Space) -> [f64; 3] {
-    linear_to_lab(
-        [
-            space.transfer.to_linear(rgb[0]),
-            space.transfer.to_linear(rgb[1]),
-            space.transfer.to_linear(rgb[2]),
-        ],
-        space,
-    )
-}
-
-/// Linear RGB in `space` -> CIE L*a*b*, for measurement only.
-///
-/// The gamut policies in `gamut.rs` work in linear destination RGB and have to be
-/// measured there — encoding first would fold the transfer curve's own clamping into
-/// a number that is supposed to be about the gamut. Deliberately *not* clamped: a
-/// channel outside [0,1] has a perfectly good Lab coordinate, and losing it here
-/// would make an out-of-gamut colour indistinguishable from its own clipped version
-/// inside the very comparison that exists to tell them apart.
-pub fn linear_to_lab(lin: [f32; 3], space: &Space) -> [f64; 3] {
-    let m = space.to_xyz();
-    let xyz = [
-        m.0[0][0] * lin[0] as f64 + m.0[0][1] * lin[1] as f64 + m.0[0][2] * lin[2] as f64,
-        m.0[1][0] * lin[0] as f64 + m.0[1][1] * lin[1] as f64 + m.0[1][2] * lin[2] as f64,
-        m.0[2][0] * lin[0] as f64 + m.0[2][1] * lin[1] as f64 + m.0[2][2] * lin[2] as f64,
-    ];
-    xyz_to_lab(xyz)
-}
+impl_real!(f32);
+impl_real!(f64);

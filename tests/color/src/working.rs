@@ -6,12 +6,12 @@
 //! ("f32 working buffers at proxy resolution") can be evaluated against evidence
 //! instead of adopted on a hunch.
 
-use crate::colour::{LINEAR_P3, Mat3, Space};
-use crate::gamut::luma_weights;
+use photodesk::engine::colour::{LINEAR_P3, Mat3, Space};
+use photodesk::engine::gamut::luma_weights;
 use crate::workload::Workload;
 use half::f16;
 
-pub use crate::gamut::{EXPORT_GAMUT_POLICY, GamutPolicy};
+pub use photodesk::engine::gamut::{EXPORT_GAMUT_POLICY, GamutPolicy};
 
 /// Precision of the working buffer between render passes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

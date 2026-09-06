@@ -1,6 +1,6 @@
 # PhotoDesk — Architecture Specification
 
-**Version:** 0.15
+**Version:** 0.16
 **Author:** Luis Howin
 **Platform:** Fedora Workstation / GNOME
 **Status:** Master spec for the coding agent. **Phase 0 complete.**
@@ -50,6 +50,8 @@ This table is the contract. Anything not listed is undecided and needs a decisio
 | **Export gamut mapping = clip chroma at constant luminance** | **FROZEN** | Measured (§4, `tests/color/tests/gamut_policy.rs`). The clip's error has no policy — how much lightness a colour loses depends on which channel ran out first, up to 2.8 L\*. This one's error is *stated*: L\* is exact by construction, chroma is what gets spent. On a real photograph it halves the adjacent pixel pairs that merge into one colour, for zero cost inside the gamut and the same handful of ALU ops. |
 | **Stage 13 runs the gamut map in the fragment shader** | **FROZEN** | Corollary of "one shader source, preview and export": the preview gamut-maps every frame to the display, so a policy that needs a per-pixel search is not adoptable whatever its colorimetry. Checked, not assumed — `shaders/encode.wgsl` lowers to GLSL ES 3.00 and agrees with the Rust reference to one colour-attachment step (`tests/renderer/tests/encode_stage.rs`). |
 | **The document schema's home is Rust; the TypeScript types are generated from it** | **FROZEN** | §12.3's source preservation and §12.1's golden images have to run headless on every commit — which is criterion 1 of the gate Spike A failed RapidRAW on, and a schema reachable only through the webview fails it the same way. A hand-written TypeScript twin would make "one schema" untestable exactly as a hand-written GLSL twin would have made "one shader source" untestable, so the front end reads generated declarations (`src/document/generated/`, committed, staleness caught by a test). |
+| **ICC profiles are parsed in-tree, not by lcms2** | **FROZEN** | The code deciding how a photograph is interpreted should be code this project can read, and the harness should be able to disagree with it — `tests/color/` checks this parser against lcms2 over the same bytes and they agree to **7.4 × 10⁻⁹**. Same "two links, both tested" arrangement §2.2 uses for ΔE2000 and the matrices, and it keeps a C library off the shipping path for eighty lines of byte reading. |
+| **A profile that is neither sRGB nor Display P3 is refused, not rounded** | **FROZEN** | §4 handles two spaces and the register says a third is a decision, not a value. Classified on the whole 3×3 colorant matrix after Bradford D50→D65, tolerance 0.02 — derived, not chosen: Adobe RGB sits 0.0901 from Display P3 and *nearer to it than to sRGB*, so a threshold on the red colorant alone reads Adobe RGB as Display P3, which is a silent wrong colour on a profile people have. |
 | **The graph is compiled once, in Rust; both renderers execute the same plan** | **FROZEN** | Corrects §13, which puts "DAG compile" in the front end. The preview runs in the webview and the export runs through wgpu (§7.2) — two compilers would render two topologies and drift exactly as two shader sources would, with §12.2 then comparing two *compilations* rather than two executions of one plan. The one-shader-source invariant would be enforced over the shader while the graph above it went unchecked. `src/graph/` is the plan's executor. |
 | **Sidecar keeps the whole filename: `IMG_4821.HEIC.photodesk.json`** | **FROZEN** | Corrects §6.1's example, which drops the extension. §14's v0.1 is "open a HEIF → … → export", so `IMG_4821.jpg` beside `IMG_4821.HEIC` is the workflow rather than a corner case — and under §6.1's naming those two share one sidecar, so editing the export silently overwrites the original's edits. |
 | **RGBA16F colour attachments may truncate rather than round** | **FROZEN as a platform fact** | Measured on RADV/RENOIR: 48,020 of 49,152 stored channels are bit-exactly the reference *truncated toward zero*, not rounded to nearest. It is the driver's rounding mode, not the shader's arithmetic, so §12.1's thresholds have to allow one attachment step or a correct render fails the suite (§16 #15). |
@@ -256,6 +258,26 @@ Three things follow that were assumptions this morning. The manufacturer really 
 **HDR gain maps — v1 ignores them, and says so out loud.** A modern iPhone HEIC ships an SDR base image plus an ISO gain map that Photos.app applies on an HDR display. PhotoDesk v1 decodes the SDR base and discards the gain map. The reason it has to be *written down* rather than merely implemented: §1's thesis is to take the manufacturer's rendering as the starting point, and on an HDR display the manufacturer's rendering *is* the gain-mapped one — so an unstated drop means the app opens a photo looking flatter than the Photos.app the user just came from, and they conclude the colour pipeline is broken. It isn't; it's this decision. It is the right decision for v1 anyway, because the target display (§4) is a 60–70% sRGB laptop IPS that cannot show the difference. **Exit condition:** an HDR-capable display, or the first time a gain-mapped export is actually wanted. `image-hdr` is already in RapidRAW's dependency tree if that day comes.
 
 **What the gain map actually looks like, now that one has been opened.** It is an auxiliary image under `urn:com:apple:photo:2020:aux:hdrgainmap`, carried inside the same container as the base image rather than as a second top-level image, at **half resolution** — 1512 × 2016 against the base's 3024 × 4032 — and 8-bit. Two consequences. libheif's **default decode returns the SDR base and does not apply it**, so v1's behaviour is what falls out of doing nothing, which is the safe direction; and if the exit condition is ever met, the map has to be **upsampled** to base resolution rather than sampled one-to-one. The discard is now a skip we can see rather than one we assume, which is what §4 asked for when it insisted this be written down rather than merely implemented.
+
+**Reading the profile is ours to do, and the trap in it is the connection space.** ICC
+colorants are stored in the profile connection space, which is **D50** — a Display P3
+profile's `rXYZ` reads (0.5151, 0.2412, −0.0011) where Display P3's red primary at D65
+is (0.4866, 0.2290, 0.0000). Comparing the tag against a D65-derived matrix finds
+neither space and rejects every photograph this application exists to open, so the
+colorants are Bradford-adapted before anything is compared.
+
+Classification is on the **whole colorant matrix**, not on one number. The tolerance is
+derived rather than picked: sRGB and Display P3 differ by 0.0934 at their largest
+component, and Adobe RGB — the nearest common space PhotoDesk does *not* handle — sits
+0.0901 from Display P3, which is **closer to P3 than sRGB is**. A threshold on the red
+colorant alone therefore reads Adobe RGB as Display P3. At 0.02 a profile must be less
+than a quarter of the way from P3 to Adobe RGB to be accepted as P3, while the tags'
+own quantisation (s15Fixed16, ~1.5 × 10⁻⁵) is three orders of magnitude below that.
+
+The tone curve is checked too. Primaries are half of a space: a profile with Display
+P3's primaries and a 1.8 gamma is not Display P3, and both of §4's spaces use the sRGB
+curve — Display P3 uses it rather than DCI's 2.6 gamma, and getting *that* wrong is the
+~4 ΔE error that looks like a gamut problem and is not one.
 
 **Display note, not a feature:** a 13.3" laptop IPS is likely 60–70% sRGB and uncalibrated. A colorimeter (~$150 USD) improves output more than any code here. It does **not** become an app feature — no soft-proof mode, no gamut overlay. Calibrate the display, trust the pipeline, edit the picture.
 
@@ -697,7 +719,7 @@ The regression suite is not optional infrastructure — for a non-destructive ed
 
 Two permanent suites came out of Phase 0 (§13), neither of which is a spike artefact:
 
-- **`tests/color/`** — Spike B's harness. Eight tests, ~20 ms, no fixtures. Two of them cross-validate against lcms2 rather than the pipeline against the harness, because a colour suite that only agrees with itself is green and meaningless.
+- **`tests/color/`** — Spike B's harness. Two of its tests cross-validate against lcms2 rather than the pipeline against the harness, because a colour suite that only agrees with itself is green and meaningless. **It now tests the product rather than a copy of it**: the spaces, curves, matrices and gamut policy moved into `engine/` when the decode path needed them, and what stays here is measurement — ΔE2000, Lab, the corpus, and a model of the pipeline whose precision is a parameter. Before the move the suite validated its *own* transforms, which is a weaker claim than it looks: it could have been green while the shipped ones were wrong, there being none.
 - **`tests/renderer/`** — Spike C's harness. Six tests covering WGSL→GLSL lowering, the negative control that compute is refused, the UBO size bound, and a wgpu-rendered reference. The WebKitGTK half needs a browser and so runs on demand rather than in CI.
 
 #### The colour suite
@@ -765,6 +787,11 @@ photodesk/
 │   │                             dependency until there is a window to open, so §12.3
 │   │                             and §12.1 can run headless on every commit
 │   ├── engine/                 ← our render core: decode, colour, GPU dispatch, shaders
+│   │   ├── colour.rs           ← spaces, transfer curves, matrices — all derived
+│   │   ├── icc.rs              ← reading an embedded profile; §4's two spaces or an error
+│   │   ├── decode.rs           ← §5 stage 0: a file becomes linear P3 f16
+│   │   ├── gamut.rs            ← §16 #11's export policy
+│   │   └── image.rs            ← the working buffer, and §7.1's proxy resample
 │   ├── photodesk/              ← document → engine bridge, IO, cache, export
 │   │   ├── document/           ← the schema: model, validation, migration
 │   │   ├── graph/              ← §6.2's DAG compile and dirty tracking
@@ -845,7 +872,8 @@ The second is the one that matches §9.4's existing posture — a missing capabi
 | ~~3~~ | ~~Preview renderer path~~ | **Closed 2026-09-05 — WebGL2 + naga transpilation. `SPIKE-C.md`** |
 | ~~11~~ | ~~Export gamut-mapping policy~~ | **Closed 2026-09-06 — clip chroma at constant luminance. §4, `tests/color/tests/gamut_policy.rs`** |
 | ~~12~~ | ~~ICC extraction from real containers~~ | **Closed 2026-09-06 — proven against a real container. `tests/color/tests/heif_icc.rs`** |
-| 13 | How the RPM handles HEVC — hard `Requires`, `Recommends` + runtime detection, or bundling | Before v0.7 packaging (§13); affects v0.1's decode error path now |
+| 13 | How the RPM handles HEVC — hard `Requires`, `Recommends` + runtime detection, or bundling | Before v0.7 packaging (§13). **The decode half is done**: the decoder consults libheif's codec list before it reads, so a missing codec is `MissingCodec` naming `libheif-freeworld` rather than a generic read failure — a truncated file and an unsupported one are now distinguishable. What remains is the packaging clause itself |
+| 17 | PNG, and therefore screenshots. §1 names a screenshot as a native subject, §4 gives it a colour rule ("assume sRGB if untagged"), and v0.1 decodes HEIF and JPEG only — so the rule is exercised by an untagged JPEG rather than by the file it was written for | Before v0.1 ships; it is one decoder against a colour path that already exists |
 | 14 | Golden-image thresholds for HEIC sources, which must clear the ~0.9 ΔE YCbCr floor (§3) | Before the first `--bless` (§12.1) |
 | 16 | Parameter ranges — the document validates finiteness but no bounds, so a `exposure: 400` is a legal document. §11 puts slider travel in the UI; whether the *file* has an opinion is unstated | Before v0.2's presets (§6.1), which is the first thing that writes params the UI did not |
 | 15 | Golden-image thresholds must also allow one colour-attachment step: an RGBA16F attachment can truncate toward zero rather than round (§0 register), which is a full-step bias on every stored channel and not the shader's doing | Before the first `--bless` (§12.1); same conversation as #14 |

@@ -17,7 +17,7 @@ When something moves between states, append to `docs/DECISIONS.md` — what move
 
 ## Current state
 
-v0.0, **Phase 0 complete**. Spec is at v0.15. All three spikes have run and two of the three answers were not the expected ones.
+v0.0, **Phase 0 complete**. Spec is at v0.16. All three spikes have run and two of the three answers were not the expected ones.
 
 **Spike A** (2026-09-05) audited RapidRAW 1.6.3 and returned *do not fork*. Read `docs/FORK-AUDIT.md` before revisiting anything about the render path. Short version: the per-pixel chain is one `@compute` kernel in which stage order is the literal statement order, and vendored shaders are read-only, so the frozen "pipeline order is explicit and versioned" was unimplementable in a fork. Separately, RapidRAW has no colour management at all, cannot open HEIF, and on Linux ships every preview frame as a lossy JPEG over IPC.
 
@@ -55,6 +55,7 @@ The four benefits §6.2 calls free come from one thing: a node's key is `H(what 
 - **Never author a compute shader, a storage buffer or a storage texture.** This is now a frozen register item, not a preference. naga refuses all three by name when targeting GLSL ES 3.00, so one of them anywhere breaks the preview path for the whole project. `@fragment`, `var<uniform>`, sampled textures, `@location(0)` returns.
 - **Both harnesses cross-validate themselves on purpose.** `tests/color/` checks its ΔE2000 and its matrices against lcms2; `tests/renderer/` keeps a negative control that asserts compute is *refused*. Don't delete either as redundant — an error in ΔE2000 would make every colour threshold meaningless and green, and without the control the fragment result is a coincidence rather than a consequence.
 - **`src/document/generated/{document,graph}.ts` are generated and committed.** Don't hand-edit them, and don't hand-write a second TypeScript description of either — that is a frozen register item, and the reason is the same one that makes the browser harness load generated GLSL rather than a twin. `cargo test -p photodesk` regenerates them and fails if they changed, so the workflow is: change the Rust, run the tests once, commit both.
+- **Don't add lcms2 to the product.** It is a dev-dependency of `tests/color/` and belongs there: the harness needs to be able to *disagree* with the shipped ICC parser, which it cannot do if both call the same library. That is a frozen register item with the same shape as the derived-not-tabulated matrices rule.
 - **`NodeKind` variants must serialise under an internal tag.** The key builder hashes the serialised node so a new field is covered automatically, which means a variant serde *cannot* serialise becomes a panic rather than a compile error. A newtype variant holding a string is the shape that does it — `MaskCompose(MaskOp)` compiled, generated plausible TypeScript and failed the first time a two-component mask was keyed. Use struct variants.
 - **A green test can quietly change what it measures.** Freezing the gamut policy took Spike B's test 2 from mean ΔE 0.0807 to 1.4183 against its own 1.5 threshold — still passing, and no longer about transform fidelity at all, because its reference converter clips and the pipeline no longer did. It is pinned to `GamutPolicy::ClipLinear` now with the reason next to it. When a policy constant moves, re-read every test whose reference embeds the old one.
 - **The photographs are gone from `~/Downloads`** as of this session, so `real_photos.rs` and `gamut_policy.rs`'s real-photograph case both skip. They are personal files and were never in the repo; put one back, or set `PHOTODESK_CORPUS_DIR`, and both run again. The ΔL\*/ΔC\*/ΔH decomposition on real pixels is the one number `DECISIONS.md` still owes.
@@ -74,6 +75,14 @@ Listed at the end of `docs/REVIEW-2026-09-05.md`. Status of the three:
 
 One lives in the register: **how the RPM handles HEVC** (§16 #13 — it cannot require RPM Fusion, so it is `Recommends` plus runtime detection or nothing). §16 #14 and #15 are the same conversation with each other: golden-image thresholds have to clear both the ~0.9 ΔE YCbCr floor and one colour-attachment step, and both are due before the first `--bless`.
 
-**Next in v0.1:** the decode path — `engine/`, HEIF/JPEG in through `libheif` to linear P3 f16, which is where §4's measured transforms stop being a harness and start being the product. Then the six sliders, then export. §16 #16 (parameter ranges) is due before v0.2's presets.
+**The decode path is done** (`engine/`, 20 tests). A photograph becomes linear P3 f16: format sniffed from bytes, ICC read and classified, untagged assumed sRGB per §4, §7.1's proxy resampled in linear light. Three things worth knowing:
+
+- **Spike B's harness now tests the product.** The spaces, curves, matrices and gamut policy moved from `tests/color/` into `engine/` — before that the suite validated its *own* copy, which could have been green while the shipped transforms were wrong, there being none.
+- **ICC is parsed in-tree, not by lcms2** (frozen), and cross-checked against it at 7.4e-9. The trap is that ICC colorants are in the D50 connection space — comparing the tag against a D65 matrix rejects every photograph the app exists to open, so Bradford runs first.
+- **Adobe RGB is nearer to Display P3 than sRGB is** (0.0901 vs 0.0934). So classification is on the whole colorant matrix, not a threshold on the red one — the obvious classifier reads Adobe RGB as Display P3, silently.
+
+The product's decoder reproduces §3's YCbCr floor at max ΔE 0.9048 against the 0.9041 the harness measured independently, which is the number §12.1's HEIC thresholds have to clear.
+
+**Next in v0.1:** the render path — walking a compiled graph, dispatching the fused §5 stages 2–9 pass, and getting a rendered frame out. Spike C's `adjust.wgsl` and `encode.wgsl` are the shaders; what does not exist is the thing that binds a graph node to a draw. Then export, then the panels. §16 #17 (PNG, and therefore screenshots) is small and due before v0.1 ships; §16 #16 (parameter ranges) before v0.2's presets.
 
 `libheif-rs` is pinned to **2.7**, not 3.x: 3.x requires libheif ≥ 1.23 and Fedora ships 1.21.2. That pin is load-bearing — the binding tracks upstream closely and Fedora will lag it.
