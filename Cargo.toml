@@ -19,6 +19,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 blake3 = "1"
 jpeg-decoder = "0.3"
+jpeg-encoder = "0.7"
+png = "0.18"
+# Already in the tree via `png`; a direct dependency so the iCCP chunk can be
+# deflated, which PNG gives no uncompressed alternative to.
+flate2 = "1"
 # Dev-only. The document schema lives in Rust and the TypeScript types are
 # generated from it (§0 register), so this is the derive that does the generating
 # — it never reaches a shipped binary, the same arrangement lcms2 has in

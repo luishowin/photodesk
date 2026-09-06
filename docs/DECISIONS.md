@@ -723,3 +723,55 @@ The renderer asks for `downlevel_webgl2_defaults` rather than what the adapter o
 ### Not yet
 
 Full-resolution export wants **tiling** (§7.1) and this renders whole images. At proxy — where §12.2's comparison and the entire preview path live — whole-image is what is wanted anyway. Node textures are released as soon as their last consumer has run, which is what keeps §7.3's 512 MB plausible: holding every intermediate of a six-layer masked graph at 12 MP would be 1.4 GB.
+
+---
+
+## 2026-09-06 — v0.1's export, and §12.3 runs end to end; spec v0.17 → v0.18
+
+A rendered frame becomes a file. `engine/{exif,export}.rs`, an ICC writer in `icc.rs`, 12 new tests. The workspace is at 122.
+
+### §12.3 has all five of its steps for the first time
+
+> `hash_before = blake3(file)`; open → apply document → render preview → export → close; `assert blake3(file) == hash_before`. **This is invariant #1 and it's the cheapest possible test for the most expensive possible bug.**
+
+`sidecar.rs` has asserted the writing half since the document model landed. The whole chain now exists to run, and it does: open a JPEG with EXIF, save a sidecar, render a proxy preview, render at full resolution, encode a file, re-hash. Identical, and the mtime with it — a rewrite with identical bytes is still a rewrite and it is the kind that survives a hash comparison. The test carries its own counterexample so a hash that cannot see a change is not mistaken for one that passed.
+
+### The tag we write is the one Apple writes
+
+§4's chain ends "→ ICC-tagged file", and the profile is built in-tree for the same reason the parser reads in-tree: the harness has to be able to *disagree*. lcms2, which has never seen the writer, reads our Display P3 profile's red colorant as **(0.5151, 0.2412, −0.0011)** — the same D50 triple §4 recorded off a real iPhone. A transform built from our profile agrees with lcms2's own idea of the space to max ΔE 0.0030 over the 24 patches, and the profiles are 444 and 456 bytes against Apple's 536.
+
+Two header fields are written as zeros on purpose: the creation date and the profile ID. **A timestamp would make every export of the same document a different file**, which breaks "export again, same result" and would make §12.1's golden images unblessable — a reference that differs from the render by the second it was made in fails every time. Now a register item.
+
+### Export surfaced an orientation bug in the decoder
+
+`metadata: strip` is §6.1's most destructive policy and the one whose correctness is least obvious. Writing it turned up something the decode unit had missed entirely: **the decode path did not read EXIF orientation at all.**
+
+That is fine while the tag travels with the file and only becomes wrong when it does not. A photograph whose pixels are sideways and whose tag says "rotate me" reads correctly to anything honouring the tag — and `strip` removes the tag, so the export comes out rotated. Orientation is *structure*, not description, and the policy is about description.
+
+So the decoder turns the pixels and the exporter writes orientation 1. All eight EXIF cases, including the four mirrors — rare from a camera, common from a scanner or a front-facing lens, and silently wrong if only the rotations are handled. libheif already applies the container's `irot`/`imir` during decode, so only the JPEG path needed it; that asymmetry is recorded rather than assumed.
+
+Now a register item, because it is the reason a whole policy is honest.
+
+### What `keep-minus-gps` actually has to do
+
+Two things, and neither is the obvious implementation.
+
+**Remove, do not unreference.** Deleting IFD0's pointer to the GPS block makes the coordinates unreachable through the tag tree and leaves them in the file. Anything that walks the segment rather than the structure still finds them, which is not what a privacy default means. The TIFF block is rebuilt from the entries that survive: 262 bytes becomes 136, and what is gone is gone.
+
+**Drop the thumbnail, under every policy.** IFD1 carries a preview of the *source*. Carried into an export it shows a file browser the unedited photograph — and after a crop it hands back exactly what the crop removed. A stale preview is confusing; a crop that does not crop is a leak.
+
+Byte order is preserved rather than normalised, deliberately: a TIFF block declares its own endianness and every multi-byte value follows it, so re-emitting in a fixed order would mean byte-swapping each value by type — correctly, for every type, including ones this code has no other reason to understand. Keeping the source's order means the value bytes are copied verbatim and cannot be corrupted by a tag nobody anticipated.
+
+### Refused rather than substituted
+
+TIFF is in `OutputFormat` and is not written: §1's non-goals put print workflows out of scope and no release has claimed it. Silently writing a PNG where a document asked for a TIFF is the kind of helpfulness that becomes a support question.
+
+### Two fixtures, one lesson repeated
+
+The EXIF fixture is generated and inlined, like the JPEG before it — and the generator was wrong on the first attempt in exactly the way hand-built binary formats are: `ifd()` never wrote the four-byte next-IFD pointer, so every offset after IFD0 was short by four and Pillow read the camera make as `e iPho`. The lesson from the decode unit stands: for a format with an offset table in it, generate the fixture and check it with something that did not build it.
+
+### Opened
+
+**§16 #18 — tiled full-res export.** §7.1 describes export as tiled and this writes whole images. The renderer releases a node's texture as soon as its last consumer has run, so a 12 MP export is a few hundred megabytes against §7.3's 512 MB cap — comfortable, and not the streaming path §7.1 describes. Due before a 60 MP source, or before v0.7's batch export makes the peak matter.
+
+**§16 #19 — HEIF output, and EXIF for HEIF sources.** §6.1's formats are JPEG, PNG and TIFF, so a HEIC-in-HEIC-out round trip is not among them, and the metadata policy currently reads EXIF from JPEG only. §4's default output is sRGB JPEG for a reason — "that's what survives contact with the internet" — so this waits until a HEIF export is actually wanted.

@@ -22,6 +22,13 @@
 //! will not open" and the cause is three layers away, so [`DecodeError::MissingCodec`]
 //! carries the package name.
 //!
+//! **Orientation is applied, so `strip` can be honest.** EXIF orientation is structure
+//! rather than description: a file whose pixels are sideways and whose tag says
+//! "rotate me" reads correctly only to software that honours the tag, and §6.1's
+//! `metadata: strip` would then rotate the photograph. Turning the pixels upright here
+//! leaves the tag nothing to say. libheif already does this for HEIF; `jpeg-decoder`
+//! does not, so the JPEG path does it.
+//!
 //! **The gain map is skipped, visibly.** §4 discards it in v1 and asks for that to be a
 //! decision rather than an accident; libheif's default decode returns the SDR base, so
 //! the decode reports what it stepped over rather than never looking.
@@ -49,6 +56,12 @@ pub struct Decoded {
     pub bit_depth: u8,
     /// Present and deliberately not applied (§4).
     pub gain_map: Option<GainMap>,
+    /// The EXIF orientation found in the file, **already applied** to `image`.
+    ///
+    /// Reported rather than silently consumed because the document records it (§6.1's
+    /// `source.orientation`) and because "1" and "6, and we turned it" are different
+    /// facts about the same photograph.
+    pub orientation: u8,
 }
 
 /// How the file said what space it was in — or that it did not.
@@ -295,7 +308,11 @@ mod heif {
             plane.stride,
             space,
         );
-        Ok(Decoded { image, source_space: space, tag, bit_depth, gain_map })
+        // libheif applies the container's `irot`/`imir` transform properties during
+        // decode, so what comes back is already upright and there is nothing to undo.
+        // Recorded as 1 rather than left unstated: the document's `source.orientation`
+        // describes the pixels the pipeline is holding, not the file's bookkeeping.
+        Ok(Decoded { image, source_space: space, tag, bit_depth, gain_map, orientation: 1 })
     }
 
     /// The container's compression format, from its `ftyp` brand.
@@ -351,13 +368,21 @@ mod jpeg {
         };
 
         let (w, h) = (info.width as u32, info.height as u32);
-        let image = to_working_space(&rgb, w, h, w as usize * 3, space);
+        // `jpeg-decoder` returns the pixels as stored and says nothing about EXIF, so
+        // the orientation is applied here. A file whose pixels are sideways and whose
+        // tag says "rotate me" is only correct to software that reads the tag, and
+        // §6.1's `metadata: strip` would then rotate the photograph.
+        let orientation = crate::engine::exif::from_jpeg(bytes)
+            .map(|e| e.orientation())
+            .unwrap_or(1);
+        let image = to_working_space(&rgb, w, h, w as usize * 3, space).oriented(orientation);
         Ok(Decoded {
             image,
             source_space: space,
             tag,
             bit_depth: 8,
             gain_map: None,
+            orientation,
         })
     }
 

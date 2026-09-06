@@ -25,7 +25,7 @@ use libheif_rs::{
 use photodesk::engine::colour::{DISPLAY_P3, SRGB, Space};
 use photodesk::engine::decode::{self, ColourTag};
 use photodesk::engine::icc;
-use photodesk_color::corpus;
+use photodesk_color::corpus::{self, COLORCHECKER_SRGB};
 use photodesk_color::delta_e::{DeltaStats, ciede2000};
 use photodesk_color::lab::encoded_to_lab;
 
@@ -121,6 +121,94 @@ fn a_profile_round_trips_back_to_the_space_it_came_from() {
             "{} does not survive being written to ICC and read back: {worst:.3e}. \
              s15Fixed16 quantises at 1.5e-5 and Bradford round-trips at ~1e-7, so \
              anything larger is the parser",
+            space.name
+        );
+    }
+}
+
+/// The mirror of the test above: lcms2 reading a profile **we** wrote.
+///
+/// §4's chain ends "→ ICC-tagged file", and the tag is written in-tree for the same
+/// reason it is read in-tree. `export.rs`'s own test shows our parser reads it back;
+/// that is self-agreement and worth little on its own. This asks an implementation
+/// that has never seen the writer whether the file says what we meant.
+#[test]
+fn lcms2_reads_the_profiles_we_write() {
+    for space in [&SRGB, &DISPLAY_P3] {
+        let bytes = icc::write(space);
+        let theirs = lcms2::Profile::new_icc(&bytes)
+            .unwrap_or_else(|e| panic!("lcms2 will not open our {} profile: {e:?}", space.name));
+
+        let red = match theirs.read_tag(lcms2::TagSignature::RedColorantTag) {
+            lcms2::Tag::CIEXYZ(xyz) => [xyz.X, xyz.Y, xyz.Z],
+            other => panic!("{}: lcms2 found no red colorant, only {other:?}", space.name),
+        };
+        // Ours, written to the same tag, read back by us. The two paths meet at the
+        // bytes rather than at a shared function.
+        let ours = icc::parse(&bytes).expect("parse").to_xyz_d65.0;
+        let d65 = photodesk::engine::colour::D65;
+        let d65_xyz = [d65.x / d65.y, 1.0, (1.0 - d65.x - d65.y) / d65.y];
+        let theirs_d65 = icc::bradford([0.9642, 1.0, 0.8249], d65_xyz).apply([
+            red[0] as f32,
+            red[1] as f32,
+            red[2] as f32,
+        ]);
+        let worst = (0..3)
+            .map(|i| (ours[i][0] - theirs_d65[i] as f64).abs())
+            .fold(0.0, f64::max);
+        println!(
+            "{} ({} bytes): lcms2 reads red {red:.4?} (D50); adapted {theirs_d65:.4?} \
+             against ours; worst {worst:.2e}",
+            space.name,
+            bytes.len()
+        );
+        assert!(worst < 1e-6, "{}: {worst:.3e}", space.name);
+
+        // And the thing that actually matters: a transform built from our profile
+        // agrees with one built from lcms2's own idea of the same space.
+        let curve =
+            lcms2::ToneCurve::new_parametric(4, &[2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045])
+                .expect("curve");
+        let reference = lcms2::Profile::new_rgb(
+            &lcms2::CIExyY { x: space.white.x, y: space.white.y, Y: 1.0 },
+            &lcms2::CIExyYTRIPLE {
+                Red: lcms2::CIExyY { x: space.red.x, y: space.red.y, Y: 1.0 },
+                Green: lcms2::CIExyY { x: space.green.x, y: space.green.y, Y: 1.0 },
+                Blue: lcms2::CIExyY { x: space.blue.x, y: space.blue.y, Y: 1.0 },
+            },
+            &[&curve, &curve, &curve],
+        )
+        .expect("reference profile");
+        let t: lcms2::Transform<[f64; 3], [f64; 3]> = lcms2::Transform::new(
+            &theirs,
+            lcms2::PixelFormat::RGB_DBL,
+            &reference,
+            lcms2::PixelFormat::RGB_DBL,
+            lcms2::Intent::RelativeColorimetric,
+        )
+        .expect("ours -> theirs");
+
+        let input: Vec<[f64; 3]> = COLORCHECKER_SRGB
+            .iter()
+            .map(|c| [c[0] as f64 / 255.0, c[1] as f64 / 255.0, c[2] as f64 / 255.0])
+            .collect();
+        let mut out = vec![[0.0f64; 3]; input.len()];
+        t.transform_pixels(&input, &mut out);
+        let deltas: Vec<f64> = input
+            .iter()
+            .zip(&out)
+            .map(|(a, b)| {
+                ciede2000(
+                    encoded_to_lab([a[0] as f32, a[1] as f32, a[2] as f32], space),
+                    encoded_to_lab([b[0] as f32, b[1] as f32, b[2] as f32], space),
+                )
+            })
+            .collect();
+        let stats = DeltaStats::from(&deltas);
+        println!("  our profile -> lcms2's own {}: {stats}", space.name);
+        assert!(
+            stats.max < 0.01,
+            "a file tagged with our profile does not describe {}: {stats}",
             space.name
         );
     }

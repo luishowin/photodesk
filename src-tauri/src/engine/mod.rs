@@ -10,6 +10,8 @@
 
 pub mod colour;
 pub mod decode;
+pub mod exif;
+pub mod export;
 pub mod gamut;
 pub mod icc;
 pub mod image;

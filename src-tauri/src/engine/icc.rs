@@ -446,3 +446,135 @@ fn read_curve(data: &[u8]) -> Result<Curve, IccError> {
         ))),
     }
 }
+
+// ------------------------------------------------------------------------- writing
+
+/// Serialise a profile for one of §4's spaces, to tag an exported file.
+///
+/// §4's chain ends "→ ICC-tagged file", and this is the tag. Written here rather than
+/// by lcms2 for the reason the parser is: the harness cross-validates by asking lcms2
+/// to *read* what we wrote, which is the mirror of asking our parser to read what
+/// lcms2 wrote, and neither test is worth much if both sides are the same library.
+///
+/// **Deterministic, and that is a requirement rather than a nicety.** The header has a
+/// creation-date field and a profile-ID field, and both are written as zeros. A
+/// timestamp would make every export of the same document a different file, which
+/// breaks "export again, same result" and would make §12.1's golden images unblessable
+/// — the reference would differ from the render by the second it was made in.
+pub fn write(space: &Space) -> Vec<u8> {
+    // Colorants go out in the connection space, which is D50 — the same trap the
+    // parser exists to avoid, in the other direction.
+    let d65 = super::colour::D65;
+    let d65_xyz = [d65.x / d65.y, 1.0, (1.0 - d65.x - d65.y) / d65.y];
+    let to_d50 = bradford(d65_xyz, PCS_D50);
+    let m = to_d50.mul(&space.to_xyz()).0;
+
+    // The three channels share one curve tag, which is what keeps a real profile small
+    // — Apple's Display P3 is 536 bytes and this lands in the same neighbourhood.
+    let curve = parametric_srgb_curve();
+    let mut tags: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"desc", mluc(space.name)),
+        (b"cprt", mluc("Public Domain")),
+        (b"wtpt", xyz_tag(PCS_D50)),
+        (b"rXYZ", xyz_tag([m[0][0], m[1][0], m[2][0]])),
+        (b"gXYZ", xyz_tag([m[0][1], m[1][1], m[2][1]])),
+        (b"bXYZ", xyz_tag([m[0][2], m[1][2], m[2][2]])),
+    ];
+    let curve_index = tags.len();
+    tags.push((b"rTRC", curve));
+    // `gTRC` and `bTRC` are emitted as tag-table entries pointing at `rTRC`'s bytes;
+    // see the sharing below.
+    let shared: Vec<&[u8; 4]> = vec![b"gTRC", b"bTRC"];
+
+    let header = 128;
+    let table = 4 + (tags.len() + shared.len()) * 12;
+    let mut out = vec![0u8; header + table];
+
+    // —— header (ICC.1:2010 §7.2) ——
+    out[8..12].copy_from_slice(&0x0400_0000u32.to_be_bytes()); // v4.0
+    out[12..16].copy_from_slice(b"mntr");
+    out[16..20].copy_from_slice(b"RGB ");
+    out[20..24].copy_from_slice(b"XYZ ");
+    out[36..40].copy_from_slice(b"acsp");
+    // Media-relative colorimetric. §16 #11's gamut map has already run by the time a
+    // file is written, so the data in it is inside the destination gamut and asking a
+    // downstream CMM for perceptual rendering would be a second, uninvited mapping.
+    out[64..68].copy_from_slice(&1u32.to_be_bytes());
+    out[68..80].copy_from_slice(&xyz_bytes(PCS_D50));
+    // Bytes 24..36 (creation date) and 84..100 (profile ID) stay zero — see above.
+
+    let mut offsets: Vec<(usize, usize)> = Vec::new();
+    for (i, (sig, data)) in tags.iter().enumerate() {
+        let at = header + 4 + i * 12;
+        let offset = out.len();
+        out[at..at + 4].copy_from_slice(*sig);
+        out[at + 4..at + 8].copy_from_slice(&(offset as u32).to_be_bytes());
+        out[at + 8..at + 12].copy_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(data);
+        // Tag data is padded to a four-byte boundary.
+        while out.len() % 4 != 0 {
+            out.push(0);
+        }
+        offsets.push((offset, data.len()));
+    }
+    let (curve_at, curve_len) = offsets[curve_index];
+    for (i, sig) in shared.iter().enumerate() {
+        let at = header + 4 + (tags.len() + i) * 12;
+        out[at..at + 4].copy_from_slice(*sig);
+        out[at + 4..at + 8].copy_from_slice(&(curve_at as u32).to_be_bytes());
+        out[at + 8..at + 12].copy_from_slice(&(curve_len as u32).to_be_bytes());
+    }
+
+    let count = (tags.len() + shared.len()) as u32;
+    out[header..header + 4].copy_from_slice(&count.to_be_bytes());
+    let size = out.len() as u32;
+    out[0..4].copy_from_slice(&size.to_be_bytes());
+    out
+}
+
+/// The sRGB transfer curve as ICC parametric type 3 — the same five parameters
+/// `colour.rs` implements, so a profile we write describes the curve we apply.
+fn parametric_srgb_curve() -> Vec<u8> {
+    let mut v = b"para".to_vec();
+    v.extend_from_slice(&[0, 0, 0, 0]);
+    v.extend_from_slice(&3u16.to_be_bytes());
+    v.extend_from_slice(&[0, 0]);
+    for p in [2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.040_449_936] {
+        v.extend_from_slice(&s15_bytes(p));
+    }
+    v
+}
+
+fn xyz_tag(v: [f64; 3]) -> Vec<u8> {
+    let mut out = b"XYZ ".to_vec();
+    out.extend_from_slice(&[0, 0, 0, 0]);
+    out.extend_from_slice(&xyz_bytes(v));
+    out
+}
+
+fn xyz_bytes(v: [f64; 3]) -> [u8; 12] {
+    let mut out = [0u8; 12];
+    for (i, c) in v.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&s15_bytes(*c));
+    }
+    out
+}
+
+fn s15_bytes(v: f64) -> [u8; 4] {
+    (((v * 65536.0).round()) as i32).to_be_bytes()
+}
+
+/// `multiLocalizedUnicodeType`, one en-US record. What ICC v4 uses where v2 had a
+/// plain string.
+fn mluc(text: &str) -> Vec<u8> {
+    let utf16: Vec<u8> = text.encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
+    let mut v = b"mluc".to_vec();
+    v.extend_from_slice(&[0, 0, 0, 0]);
+    v.extend_from_slice(&1u32.to_be_bytes()); // one record
+    v.extend_from_slice(&12u32.to_be_bytes()); // record size
+    v.extend_from_slice(b"enUS");
+    v.extend_from_slice(&(utf16.len() as u32).to_be_bytes());
+    v.extend_from_slice(&28u32.to_be_bytes()); // the string starts right after
+    v.extend_from_slice(&utf16);
+    v
+}

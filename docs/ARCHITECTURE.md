@@ -1,6 +1,6 @@
 # PhotoDesk — Architecture Specification
 
-**Version:** 0.17
+**Version:** 0.18
 **Author:** Luis Howin
 **Platform:** Fedora Workstation / GNOME
 **Status:** Master spec for the coding agent. **Phase 0 complete.**
@@ -50,6 +50,8 @@ This table is the contract. Anything not listed is undecided and needs a decisio
 | **Export gamut mapping = clip chroma at constant luminance** | **FROZEN** | Measured (§4, `tests/color/tests/gamut_policy.rs`). The clip's error has no policy — how much lightness a colour loses depends on which channel ran out first, up to 2.8 L\*. This one's error is *stated*: L\* is exact by construction, chroma is what gets spent. On a real photograph it halves the adjacent pixel pairs that merge into one colour, for zero cost inside the gamut and the same handful of ALU ops. |
 | **Stage 13 runs the gamut map in the fragment shader** | **FROZEN** | Corollary of "one shader source, preview and export": the preview gamut-maps every frame to the display, so a policy that needs a per-pixel search is not adoptable whatever its colorimetry. Checked, not assumed — `shaders/encode.wgsl` lowers to GLSL ES 3.00 and agrees with the Rust reference to one colour-attachment step (`tests/renderer/tests/encode_stage.rs`). |
 | **The document schema's home is Rust; the TypeScript types are generated from it** | **FROZEN** | §12.3's source preservation and §12.1's golden images have to run headless on every commit — which is criterion 1 of the gate Spike A failed RapidRAW on, and a schema reachable only through the webview fails it the same way. A hand-written TypeScript twin would make "one schema" untestable exactly as a hand-written GLSL twin would have made "one shader source" untestable, so the front end reads generated declarations (`src/document/generated/`, committed, staleness caught by a test). |
+| **Exports are deterministic** | **FROZEN** | Same document, same bytes. No timestamp in the ICC profile, no encoder state that depends on when it ran. §12.1's golden images cannot be blessed otherwise — a reference that differs from the render by the second it was made in fails every time it runs. |
+| **EXIF orientation is applied to the pixels, never carried forward** | **FROZEN** | Orientation is structure, not description. A file whose pixels are sideways and whose tag says "rotate me" reads correctly only to software honouring the tag, so §6.1's `metadata: strip` would rotate the photograph. The decoder turns the pixels; the export writes orientation 1. |
 | **Proxy and export agree exactly only on band-limited, in-gamut content** | **FROZEN as a property** | Measured (§12.2, `src-tauri/tests/render.rs`). Under both conditions the two paths differ by **0.15 of an 8-bit code**; with detail finer than the proxy, by **152**, of which 108 is the gamut map alone. Neither is a defect — a non-linear chain does not commute with an average, and §16 #11's map has a kink at the gamut boundary. §12.2's thresholds have to be stated against the preconditions rather than against a number. |
 | **ICC profiles are parsed in-tree, not by lcms2** | **FROZEN** | The code deciding how a photograph is interpreted should be code this project can read, and the harness should be able to disagree with it — `tests/color/` checks this parser against lcms2 over the same bytes and they agree to **7.4 × 10⁻⁹**. Same "two links, both tested" arrangement §2.2 uses for ΔE2000 and the matrices, and it keeps a C library off the shipping path for eighty lines of byte reading. |
 | **A profile that is neither sRGB nor Display P3 is refused, not rounded** | **FROZEN** | §4 handles two spaces and the register says a third is a decision, not a value. Classified on the whole 3×3 colorant matrix after Bradford D50→D65, tolerance 0.02 — derived, not chosen: Adobe RGB sits 0.0901 from Display P3 and *nearer to it than to sRGB*, so a threshold on the red colorant alone reads Adobe RGB as Display P3, which is a silent wrong colour on a profile people have. |
@@ -280,6 +282,13 @@ P3's primaries and a 1.8 gamma is not Display P3, and both of §4's spaces use t
 curve — Display P3 uses it rather than DCI's 2.6 gamma, and getting *that* wrong is the
 ~4 ΔE error that looks like a gamut problem and is not one.
 
+**And the tag we write is the one Apple writes.** §4's chain ends "→ ICC-tagged file";
+the profile is built in-tree for the same reason it is read in-tree, and lcms2 — which
+has never seen the writer — reads our Display P3 profile's red colorant as (0.5151,
+0.2412, −0.0011), the same D50 triple this section recorded off a real iPhone. A
+transform built from our profile agrees with lcms2's own idea of the space to max
+ΔE 0.0030 over the 24 patches. The profiles are 444 and 456 bytes, against Apple's 536.
+
 **Display note, not a feature:** a 13.3" laptop IPS is likely 60–70% sRGB and uncalibrated. A colorimeter (~$150 USD) improves output more than any code here. It does **not** become an app feature — no soft-proof mode, no gamut overlay. Calibrate the display, trust the pipeline, edit the picture.
 
 ---
@@ -400,6 +409,13 @@ detecting it, and darktable settled the same question the same way.
   schema is a different thing, and written down twice it is two schemas. The generated
   file is committed so a fresh clone builds, and a test rewrites it and then fails if
   the contents moved — so staleness is caught with the fix already applied.
+- **`metadata` removes rather than unreferences, and never carries a thumbnail.**
+  `keep-minus-gps` rebuilds the EXIF block from the entries that survive, so the
+  coordinates are gone from the file rather than merely unreachable through the tag
+  tree — anything that walks the segment instead of the structure would still find
+  them otherwise. And IFD1's thumbnail is dropped under *every* policy: it is a picture
+  of the source, so it shows a file browser the unedited photograph, and after a crop
+  it hands back exactly what the crop removed.
 - **No cache path is ever written into the document.** Cache locations are derived from the keys in §9.3. A document that names a file inside disposable `.photodesk/` is a document with a dangling reference, which contradicts §0's "no cache is ever load-bearing state".
 
 ### 6.2 In memory — typed edit graph
@@ -778,6 +794,8 @@ for each source in corpus:
 
 Byte-identical. Not "metadata unchanged" — identical. Runs in CI on every commit. This is invariant #1 and it's the cheapest possible test for the most expensive possible bug.
 
+**Running with all five steps since 2026-09-06** (`src-tauri/tests/export.rs`). The mtime is asserted alongside the hash, because a rewrite with identical bytes is still a rewrite and it is the kind that survives a hash comparison — and the test carries its own counterexample, so a hash that cannot see a change is not mistaken for a test that passed.
+
 ### 12.4 Others
 
 - **Migration:** every version step has a fixture pair, plus rejection tests for newer schemas and unknown ops.
@@ -809,7 +827,9 @@ photodesk/
 │   │   ├── decode.rs           ← §5 stage 0: a file becomes linear P3 f16
 │   │   ├── gamut.rs            ← §16 #11's export policy
 │   │   ├── image.rs            ← the working buffer, and §7.1's proxy resample
-│   │   └── render.rs           ← executes a compiled graph through wgpu (§7.2)
+│   │   ├── render.rs           ← executes a compiled graph through wgpu (§7.2)
+│   │   ├── exif.rs             ← what a photograph says about itself, and §6.1's policy
+│   │   └── export.rs           ← §6.1's `output` block: a frame becomes a file
 │   ├── photodesk/              ← document → engine bridge, IO, cache, export
 │   │   ├── document/           ← the schema: model, validation, migration
 │   │   ├── graph/              ← §6.2's DAG compile and dirty tracking
@@ -893,6 +913,8 @@ The second is the one that matches §9.4's existing posture — a missing capabi
 | ~~11~~ | ~~Export gamut-mapping policy~~ | **Closed 2026-09-06 — clip chroma at constant luminance. §4, `tests/color/tests/gamut_policy.rs`** |
 | ~~12~~ | ~~ICC extraction from real containers~~ | **Closed 2026-09-06 — proven against a real container. `tests/color/tests/heif_icc.rs`** |
 | 13 | How the RPM handles HEVC — hard `Requires`, `Recommends` + runtime detection, or bundling | Before v0.7 packaging (§13). **The decode half is done**: the decoder consults libheif's codec list before it reads, so a missing codec is `MissingCodec` naming `libheif-freeworld` rather than a generic read failure — a truncated file and an unsupported one are now distinguishable. What remains is the packaging clause itself |
+| 18 | Tiled full-res export (§7.1). The exporter writes whole images; the renderer releases a node's texture as soon as its last consumer has run, so a 12 MP export is a few hundred megabytes against §7.3's 512 MB cap — comfortable, and not the streaming path §7.1 describes | Before a 60 MP source, or before v0.7's batch export makes the peak matter |
+| 19 | HEIF **output**, and with it EXIF for HEIF sources. §6.1's formats are JPEG, PNG and TIFF; a HEIC in, HEIC out round trip is not among them, and the metadata policy reads EXIF from JPEG only | Whenever a HEIF export is actually wanted; §4's default output is sRGB JPEG for a reason |
 | 17 | PNG, and therefore screenshots. §1 names a screenshot as a native subject, §4 gives it a colour rule ("assume sRGB if untagged"), and v0.1 decodes HEIF and JPEG only — so the rule is exercised by an untagged JPEG rather than by the file it was written for | Before v0.1 ships; it is one decoder against a colour path that already exists |
 | 14 | Golden-image thresholds for HEIC sources, which must clear the ~0.9 ΔE YCbCr floor (§3) | Before the first `--bless` (§12.1) |
 | 16 | Parameter ranges — the document validates finiteness but no bounds, so a `exposure: 400` is a legal document. §11 puts slider travel in the UI; whether the *file* has an opinion is unstated | Before v0.2's presets (§6.1), which is the first thing that writes params the UI did not |

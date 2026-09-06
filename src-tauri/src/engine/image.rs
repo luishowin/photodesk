@@ -76,6 +76,48 @@ impl Image {
         ]
     }
 
+    /// Apply an EXIF orientation, so everything downstream sees an upright picture.
+    ///
+    /// **This is why `metadata: strip` is honest.** EXIF orientation is not
+    /// description, it is structure: a file whose pixels are sideways and whose tag
+    /// says "rotate me" looks correct only to software that reads the tag. Stripping
+    /// the metadata from such a file rotates the photograph, which is not what anyone
+    /// means by removing metadata. Turning the pixels upright here means the tag has
+    /// nothing left to say, and every policy in §6.1 can drop it safely.
+    ///
+    /// The eight cases are EXIF 2.3's, and the four odd ones are mirrors — rare from a
+    /// camera, common from a scanner or a front-facing lens, and silently wrong if
+    /// only the rotations are handled.
+    pub fn oriented(&self, orientation: u8) -> Image {
+        if orientation <= 1 || orientation > 8 {
+            return self.clone();
+        }
+        // Transposed for 5–8, which swap the axes.
+        let (w, h) = match orientation {
+            5..=8 => (self.height, self.width),
+            _ => (self.width, self.height),
+        };
+        let mut pixels = vec![f16::ZERO; (w as usize) * (h as usize) * 3];
+        for y in 0..h {
+            for x in 0..w {
+                // Where this destination pixel comes from in the source.
+                let (sx, sy) = match orientation {
+                    2 => (self.width - 1 - x, y),                 // mirror horizontal
+                    3 => (self.width - 1 - x, self.height - 1 - y), // rotate 180
+                    4 => (x, self.height - 1 - y),                 // mirror vertical
+                    5 => (y, x),                                   // transpose
+                    6 => (y, self.height - 1 - x),                 // rotate 90 CW
+                    7 => (self.width - 1 - y, self.height - 1 - x), // transverse
+                    _ => (self.width - 1 - y, x),                  // rotate 270 CW
+                };
+                let src = (sy as usize * self.width as usize + sx as usize) * 3;
+                let dst = (y as usize * w as usize + x as usize) * 3;
+                pixels[dst..dst + 3].copy_from_slice(&self.pixels[src..src + 3]);
+            }
+        }
+        Image::new(w, h, pixels)
+    }
+
     /// §7.1's proxy size: `min(2 × viewport_longest_edge, source_longest_edge)`.
     ///
     /// The `min` is what stops a proxy being an upscale. Editing a 900-pixel scan on a

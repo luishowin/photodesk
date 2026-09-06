@@ -25,6 +25,9 @@ blake3.workspace = true
 half.workspace = true
 libheif-rs.workspace = true
 jpeg-decoder.workspace = true
+jpeg-encoder.workspace = true
+png.workspace = true
+flate2.workspace = true
 # §7.2: export in Rust via wgpu, preview in the webview via WebGL2, one WGSL source
 # transpiled for both. This is the export half; the preview half is the front end's.
 wgpu.workspace = true
