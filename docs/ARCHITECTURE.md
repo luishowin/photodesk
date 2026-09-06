@@ -1,6 +1,6 @@
 # PhotoDesk — Architecture Specification
 
-**Version:** 0.13
+**Version:** 0.14
 **Author:** Luis Howin
 **Platform:** Fedora Workstation / GNOME
 **Status:** Master spec for the coding agent. **Phase 0 complete.**
@@ -49,6 +49,8 @@ This table is the contract. Anything not listed is undecided and needs a decisio
 | **HEIC sources carry a ~0.9 ΔE conversion floor** | **FROZEN as a format fact** | libheif converts RGB↔YCbCr around every YCbCr codec. Measured identical to four decimals across libaom and x265, both asked for lossless — so it is the conversion, not compression. Apple ships YCbCr, so it is unavoidable on read. §12.1's HEIC thresholds must sit above it. |
 | **Export gamut mapping = clip chroma at constant luminance** | **FROZEN** | Measured (§4, `tests/color/tests/gamut_policy.rs`). The clip's error has no policy — how much lightness a colour loses depends on which channel ran out first, up to 2.8 L\*. This one's error is *stated*: L\* is exact by construction, chroma is what gets spent. On a real photograph it halves the adjacent pixel pairs that merge into one colour, for zero cost inside the gamut and the same handful of ALU ops. |
 | **Stage 13 runs the gamut map in the fragment shader** | **FROZEN** | Corollary of "one shader source, preview and export": the preview gamut-maps every frame to the display, so a policy that needs a per-pixel search is not adoptable whatever its colorimetry. Checked, not assumed — `shaders/encode.wgsl` lowers to GLSL ES 3.00 and agrees with the Rust reference to one colour-attachment step (`tests/renderer/tests/encode_stage.rs`). |
+| **The document schema's home is Rust; the TypeScript types are generated from it** | **FROZEN** | §12.3's source preservation and §12.1's golden images have to run headless on every commit — which is criterion 1 of the gate Spike A failed RapidRAW on, and a schema reachable only through the webview fails it the same way. A hand-written TypeScript twin would make "one schema" untestable exactly as a hand-written GLSL twin would have made "one shader source" untestable, so the front end reads generated declarations (`src/document/generated/`, committed, staleness caught by a test). |
+| **Sidecar keeps the whole filename: `IMG_4821.HEIC.photodesk.json`** | **FROZEN** | Corrects §6.1's example, which drops the extension. §14's v0.1 is "open a HEIF → … → export", so `IMG_4821.jpg` beside `IMG_4821.HEIC` is the workflow rather than a corner case — and under §6.1's naming those two share one sidecar, so editing the export silently overwrites the original's edits. |
 | **RGBA16F colour attachments may truncate rather than round** | **FROZEN as a platform fact** | Measured on RADV/RENOIR: 48,020 of 49,152 stored channels are bit-exactly the reference *truncated toward zero*, not rounded to nearest. It is the driver's rounding mode, not the shader's arithmetic, so §12.1's thresholds have to allow one attachment step or a correct render fails the suite (§16 #15). |
 | **No front-end framework: TypeScript + Vite, zero runtime dependencies** | **FROZEN** | The canvas needs none (Spike C), and §10/§11 specify the interaction surface closely enough that a component library would be overridden rather than used. Cost accepted knowingly: panels, undo and the keymap are hand-written, and the bill arrives at v0.2–v0.7, not v0.1. |
 
@@ -312,12 +314,20 @@ One sidecar per image, plus a disposable cache directory.
 ```
 photos/
 ├── IMG_4821.HEIC
-├── IMG_4821.photodesk.json
+├── IMG_4821.HEIC.photodesk.json
 └── .photodesk/
     ├── proxy/…      ← regenerable
     ├── masks/…      ← regenerable
     └── embed/…      ← regenerable
 ```
+
+**The sidecar keeps the photograph's whole filename, extension included.** An earlier
+revision of this section dropped it — `IMG_4821.photodesk.json` — which is tidier and
+which collides in the one workflow §14 gives v0.1: open a HEIF, edit, export. The
+export lands as `IMG_4821.jpg` beside `IMG_4821.HEIC`, those two share a sidecar under
+the shorter name, and editing the export overwrites the original's edits with no error
+and nothing to notice. Keeping the extension removes the collision rather than
+detecting it, and darktable settled the same question the same way.
 
 ```json
 {
@@ -360,6 +370,12 @@ photos/
 - Omitted keys mean *identity*, not zero. Identity stages are skipped entirely at render time.
 - A preset is this document minus `source`, `geometry`, `output`. Style presets replace `stack`; tool presets merge into it.
 - History is an append-only list of document deltas, never pixel states. It is **session-only and not serialised** — a sidecar that accumulated every gesture forever would grow without bound, and undo across sessions is not a promise this app makes.
+- **The schema is defined once, in Rust, and the TypeScript types are generated from
+  it** (`src-tauri/src/photodesk/document/`, emitted to `src/document/generated/`).
+  §13 puts the *editing* model in the front end and that is where it belongs; the
+  schema is a different thing, and written down twice it is two schemas. The generated
+  file is committed so a fresh clone builds, and a test rewrites it and then fails if
+  the contents moved — so staleness is caught with the fix already applied.
 - **No cache path is ever written into the document.** Cache locations are derived from the keys in §9.3. A document that names a file inside disposable `.photodesk/` is a document with a dangling reference, which contradicts §0's "no cache is ever load-bearing state".
 
 ### 6.2 In memory — typed edit graph
@@ -727,14 +743,20 @@ Byte-identical. Not "metadata unchanged" — identical. Runs in CI on every comm
 ```
 photodesk/
 ├── src/                        ← front end (TypeScript + Vite, no framework)
-│   ├── document/               ← model, validation, migration, history, presets
+│   ├── document/               ← editing model, history, presets
+│   │   └── generated/          ← the schema's TypeScript types. Emitted from Rust,
+│   │                             committed, staleness caught by a test (§0 register)
 │   ├── graph/                  ← DAG compile, dirty tracking (no UI)
 │   ├── panels/                 ← Crop Light Color Detail Effects Masks AI
 │   ├── canvas/                 ← viewport, preview renderer, before/after
 │   └── design/                 ← tokens, type scale
-├── src-tauri/src/
+├── src-tauri/src/              ← a library first, an application later. No `tauri`
+│   │                             dependency until there is a window to open, so §12.3
+│   │                             and §12.1 can run headless on every commit
 │   ├── engine/                 ← our render core: decode, colour, GPU dispatch, shaders
 │   ├── photodesk/              ← document → engine bridge, IO, cache, export
+│   │   ├── document/           ← the schema: model, validation, migration
+│   │   └── sidecar.rs          ← where it sits on disk, and how it is written
 │   └── ai/                     ← provider registry, routing
 ├── shaders/photodesk/          ← WGSL source of truth. The only shader source (Spike A gate failed)
 ├── providers/                  ← LocalCpu, RemoteHttp, ComfyUI, LocalGpu
@@ -747,6 +769,13 @@ photodesk/
 ├── docs/{ARCHITECTURE,FORK-AUDIT,PIPELINE,DOCUMENT,DECISIONS}.md
 └── packaging/rpm/
 ```
+
+**`src-tauri/` links no webview yet, and that is a decision rather than a delay.** §14
+gives v0.1 a document model, a graph compile, source-preservation and golden tests
+before it gives it a window, and every one of those has to run headless — which is
+criterion 1 of the gate §2.1 failed RapidRAW on. A crate that links webkit cannot run
+them, so `tauri` and a `main.rs` arrive when there is a window, and everything before
+that stays testable without one. It is also how a Tauri v2 project is laid out anyway.
 
 **There is exactly one shader source, `shaders/photodesk/`, and it is ours.** Spike A's gate failed, so nothing is vendored and `engine/` is our own render core rather than somebody else's, read-write like the rest of the tree. Two live shader sources is the WYSIWYG drift §0 freezes against, wearing a directory layout as a disguise; the ambiguity that made that possible is gone.
 
@@ -806,6 +835,7 @@ The second is the one that matches §9.4's existing posture — a missing capabi
 | ~~12~~ | ~~ICC extraction from real containers~~ | **Closed 2026-09-06 — proven against a real container. `tests/color/tests/heif_icc.rs`** |
 | 13 | How the RPM handles HEVC — hard `Requires`, `Recommends` + runtime detection, or bundling | Before v0.7 packaging (§13); affects v0.1's decode error path now |
 | 14 | Golden-image thresholds for HEIC sources, which must clear the ~0.9 ΔE YCbCr floor (§3) | Before the first `--bless` (§12.1) |
+| 16 | Parameter ranges — the document validates finiteness but no bounds, so a `exposure: 400` is a legal document. §11 puts slider travel in the UI; whether the *file* has an opinion is unstated | Before v0.2's presets (§6.1), which is the first thing that writes params the UI did not |
 | 15 | Golden-image thresholds must also allow one colour-attachment step: an RGBA16F attachment can truncate toward zero rather than round (§0 register), which is a full-step bias on every stored channel and not the shader's doing | Before the first `--bless` (§12.1); same conversation as #14 |
 | 4 | Pipeline v1 ordering | Golden-image validation |
 | 5 | Pre-1.0 vs post-1.0 reorder policy | Before v0.2 (§5) |

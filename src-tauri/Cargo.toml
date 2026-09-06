@@ -1,0 +1,27 @@
+[package]
+name = "photodesk"
+description = "PhotoDesk's Rust core: document model, IO, and (later) the render engine."
+version = "0.1.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# No `tauri` dependency, and that is deliberate rather than pending.
+#
+# §12.3's source-preservation test and §12.1's golden images both have to run
+# headless, on every commit, with no webview and no front-end state — which is
+# criterion 1 of the gate Spike A failed RapidRAW on. A crate that links webkit
+# cannot do that, and would need four devel packages this machine does not have.
+#
+# So this is a library first and an application later: `tauri` and a `main.rs`
+# arrive when there is a window to open, and everything below stays testable
+# without one. That is also how a Tauri v2 project is laid out anyway.
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]
+ts-rs.workspace = true

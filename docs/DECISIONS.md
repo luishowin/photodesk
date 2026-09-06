@@ -475,3 +475,64 @@ Worth noting in passing: the 6.0 run reproduced `SPIKE-C.md`'s 5.92 ms exactly, 
 Nothing between states. `Preview renderer path: WebGL2 + WGSL→GLSL via naga` was already FROZEN; what this retires is the **residual risk attached to it**, and the register reason now says where it was re-run. The last item on the "before v0.1" list that was not a spike is done — the remaining work is v0.1 itself.
 
 `SPIKE-C.md` is not edited. It records what was measured on 2026-09-05 and its caveat was correct on the day.
+
+---
+
+## 2026-09-06 — v0.1 begins: the document model; spec v0.13 → v0.14
+
+The first product code in the repository. §14 gives v0.1 "document model, graph compile, source-preservation and golden tests running" alongside the six sliders, and puts the reason plainly: the boring parts are the ones that are expensive to retrofit and impossible to bolt on later. This is the first of them.
+
+`src-tauri/src/photodesk/{document,sidecar}`, 36 tests.
+
+### Two decisions §0 required before any of it could be written
+
+**The document schema's home is Rust, and the TypeScript types are generated from it. FROZEN.**
+
+§13 puts `src/document/` in the front end, which invites the reading that the schema is a TypeScript concern and Rust receives something already parsed. That reading fails on §12.3. Source preservation is *"for each source in corpus: hash, open → apply document → render → export, assert the hash is unchanged"* — a headless Rust test, on every commit, that needs a document. So does §12.1's golden-image corpus. A schema reachable only through a webview cannot serve either, and "the processing chain can be invoked headlessly from a test binary, with no webview and no front-end state" is **criterion 1 of the gate Spike A failed RapidRAW on**. Adopting the same shape in our own tree, having rejected a fork over it, would be the worst kind of consistency.
+
+The other direction — a Rust schema plus a hand-written TypeScript one — is two schemas, and the one that drifts is the one with no test looking at it. The project already has an answer to that shape and it is in the tree: `tests/renderer/web/` loads **naga-generated GLSL** rather than a hand-written twin, deliberately, because a twin would make §0's one-shader-source invariant untestable. Same argument, different artefact. The types are generated into `src/document/generated/`, **committed** so a fresh clone builds, and a test rewrites the file and then fails if the contents moved — so the fix is already applied by the time anyone reads the message.
+
+`ts-rs` is a dev-dependency and the derives are `#[cfg_attr(test, ...)]`, so nothing generated reaches a shipped binary. `cargo build --workspace` is warning-free; the one warning in a test build is ts-rs declining to parse `deny_unknown_fields`, which it ignores and which TypeScript expresses structurally anyway.
+
+**`src-tauri/` links no webview yet.** Tauri's four devel packages are absent on this machine, but that is not the reason — the reason is the paragraph above. `tauri` and a `main.rs` arrive when there is a window to open. It is also how a Tauri v2 project is laid out anyway.
+
+### A test found a bug in §6.1, in the workflow §14 gives v0.1
+
+§6.1 shows the sidecar as `IMG_4821.HEIC` beside `IMG_4821.photodesk.json` — extension dropped, which is tidier. The naming test asserted that two photographs with the same stem get one sidecar each, the implementation truncated at the last dot, and the two disagreed.
+
+The implementation was right and the spec was wrong, and the case is not a corner: **v0.1 is "open a HEIF → … → export"**, so an export beside its source is `IMG_4821.jpg` next to `IMG_4821.HEIC`. Under §6.1's naming those two share one sidecar, and editing the export overwrites the original's edits with no error and nothing to notice. Data loss, in the one workflow the release exists to deliver.
+
+**Frozen: the sidecar keeps the whole filename** — `IMG_4821.HEIC.photodesk.json`. It removes the collision rather than detecting it, at the cost of a longer name that still sorts beside its photograph. darktable settled the same question the same way; Lightroom did not, and the collision between a raw and its JPEG is a known complaint about it. §6.1 is corrected.
+
+### §6.3's table is six rows, and three of them are not accept-or-reject
+
+| Condition | Behaviour | Where it is |
+|---|---|---|
+| `photodesk` newer | Reject, clear message | `MigrateError::FromTheFuture` |
+| older, migration exists | Migrate on load, write back on next save | `Notice::Migrated` |
+| older, no migration | Open **read-only**, offer export-as-new | `ReadOnly::NoMigrationPath` |
+| `pipeline_version` older | Open, warn, **never silently re-render** | `Notice::PipelineIsOlder` |
+| unknown `op` / `op_version` | Reject | `Op` is a closed enum; `ParamsError::UnknownOpVersion` |
+| unknown key in `params` | Validation error | `deny_unknown_fields`, and the message names the key |
+
+A table like that gets implemented for the two easy rows and remembered for the others, so it is in the types rather than in a comment. Loading returns a `Loaded`, not a `Result<Document, _>`: the document is **not a public field**, `into_writable()` is the only door to an owned one and it fails with §6.3's reason, and `save` takes an owned document — so **read-only is enforced by the compiler**. Everything the user has to be told is a `Vec<Notice>` the caller has to look at rather than a flag it can forget.
+
+The migration registry is **empty and correct** — schema 1 is the first. The machinery exists because §6.3 gives five *other* conditions defined behaviour, and writing those at the moment the first migration lands means writing them under pressure with a user's edits in the balance. `migrate` takes its registry as a parameter, so composition is tested against a synthetic chain rather than by putting a fictional step in the shipped registry to make a test pass. Three properties are asserted: steps run in order and stop at the target, a gap is an error rather than a silent stop, and **a failed step leaves the document untouched** — a half-migrated document is worse than an unmigrated one because it looks readable.
+
+### The two §6.1 rules that shaped the types
+
+**`params` is a fixed schema per `op` + `op_version`.** Nothing serde offers dispatches on that: the discriminant is a *pair of sibling fields* next to the object rather than a tag inside it. So `Layer` has a hand-written `Deserialize` — forty lines — that reads the pair first and types the params second. The alternative, storing params as untyped JSON and validating later, would mean a `Document` in memory could be invalid, and "a Document has been validated" is worth more than the forty lines.
+
+**Omitted keys mean identity, not zero**, so every parameter is `Option` even where zero is the identity value. That is load-bearing rather than tidy, and the test proves it by doing the operation it exists for: §6.1 makes a tool preset something that *merges into* the stack, so a preset saying nothing about exposure must leave exposure alone. With a plain `f32`, "sets exposure to 0" and "says nothing about exposure" are the same value and one of them silently discards the user's work.
+
+`adjust` v1 carries the nine scalars of §5's stages 2–5 and 9, where §14 gives v0.1 six sliders. The extra three belong to the same op and adding them later would cost an `op_version` bump to buy nothing. Stages 6–8 are absent: a curve, an HSL band set and a grading wheel are structured rather than scalar, they arrive at v0.3, and they will come with the version bump they actually justify.
+
+### §0's first frozen item, tested at the scope that exists
+
+§12.3 is the whole cycle and two of its five steps do not exist yet. What exists is the part that *writes*, which is the part that could break the invariant, so it is asserted now rather than when the render path arrives and there are three suspects instead of one: create, save, reopen, edit, save again, re-hash the photograph. Byte-identical **and** the same mtime, because a rewrite with identical bytes is still a rewrite and it is the kind that survives a hash comparison. With the counterexample, so a hash that cannot see a change is not mistaken for a test that passed.
+
+Sidecar writes are atomic — temp file beside the target, then rename — because a half-written sidecar is worse than an absent one: it looks like a corrupt document rather than a missing one, and §6.3 has no row for "truncated". And the serialisation is canonical, so **opening a photograph and saving it back produces the same bytes**: a loader that materialised defaults or normalised anything would mean merely looking at a photo dirties its sidecar, and a user with a backup tool sees churn they did not cause.
+
+### Opened
+
+**§16 #16 — parameter ranges.** The document validates finiteness and no bounds, so `exposure: 400` is a legal document. Deliberate: §6.1 states no ranges and §11 puts slider travel in the UI, so inventing numbers here would put them in the register's blind spot. Due before v0.2's presets, which are the first thing that writes params the UI did not.
