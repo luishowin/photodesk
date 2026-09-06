@@ -24,6 +24,10 @@ serde_json.workspace = true
 blake3.workspace = true
 half.workspace = true
 libheif-rs.workspace = true
+# Already in the tree beneath wgpu (one copy, 30.0.1). Direct because §7.2's preview
+# half lowers this crate's WGSL to GLSL ES 3.00 — see `engine/glsl.rs`, which runs at
+# startup rather than at build time so the webview cannot be handed a stale shader.
+naga.workspace = true
 jpeg-decoder.workspace = true
 jpeg-encoder.workspace = true
 png.workspace = true

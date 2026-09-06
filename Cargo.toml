@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["src-tauri", "tests/color", "tests/renderer"]
+members = ["app", "src-tauri", "tests/color", "tests/renderer"]
 
 [workspace.package]
 edition = "2024"
@@ -12,6 +12,9 @@ half = { version = "2", features = ["bytemuck"] }
 lcms2 = "6"
 libheif-rs = "2"
 naga = { version = "30", features = ["wgsl-in", "glsl-out"] }
+tauri = "2"
+tauri-build = "2"
+tauri-plugin-dialog = "2"
 wgpu = "30"
 pollster = "1"
 bytemuck = { version = "1", features = ["derive"] }

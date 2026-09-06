@@ -7,7 +7,7 @@
 //! switch. If naga only handles the easy half, that is worth finding out now.
 
 use naga::ShaderStage;
-use photodesk_renderer_spike::{ADJUST_WGSL, to_glsl_es300};
+use photodesk_renderer_spike::{ADJUST_WGSL, PRODUCT_ADJUST_WGSL, to_glsl_es300};
 
 #[test]
 fn fragment_stage_lowers_to_glsl_es_300() {
@@ -154,5 +154,68 @@ fn emit_glsl_for_the_web_harness() {
         let path = format!("{out_dir}/{name}");
         std::fs::write(&path, &t.source).expect("write generated shader");
         println!("wrote {path} ({} bytes)", t.source.len());
+    }
+}
+
+/// The shader the preview actually runs, lowered the way the preview lowers it.
+///
+/// Spike C answered its question with a stress shader, and everything above is about
+/// that. This is the omission that left: **`shaders/photodesk/adjust.wgsl` had never
+/// been lowered by anything**, because the spike lowers its own copy and `render.rs`
+/// hands the WGSL straight to wgpu, which does not go through GLSL at all. So "one
+/// shader source, preview and export" was enforced for stage 13 and assumed for stages
+/// 2–9 — and the way that fails is a preview that will not start, on the one shader the
+/// user drags six sliders on.
+#[test]
+fn the_products_fused_pass_lowers_to_glsl_es_300() {
+    for (entry, stage) in [
+        ("vs_main", ShaderStage::Vertex),
+        ("fs_main", ShaderStage::Fragment),
+    ] {
+        match to_glsl_es300(PRODUCT_ADJUST_WGSL, entry, stage) {
+            Ok(t) => {
+                println!(
+                    "{entry}: {} lines, uniforms {:?}",
+                    t.source.lines().count(),
+                    t.uniform_names
+                );
+                assert!(
+                    t.source.contains("#version 300 es"),
+                    "{entry} did not target ES 3.00"
+                );
+            }
+            Err(e) => panic!("the product's adjust shader does not lower: {e}"),
+        }
+    }
+}
+
+/// The nine parameters the front end writes into the uniform block are addressed **by
+/// name**, from the linked program's own reflection — so a rename in the WGSL that the
+/// TypeScript does not follow is a slider that silently stops working.
+///
+/// The names cannot be checked against a running WebGL2 context from here, but they can
+/// be checked against the lowered source, which is what the driver will reflect.
+#[test]
+fn the_lowered_uniform_block_still_names_the_documents_parameters() {
+    let t = to_glsl_es300(PRODUCT_ADJUST_WGSL, "fs_main", ShaderStage::Fragment)
+        .expect("fragment lowers");
+    // §14's v0.1 ships six of these; the other three are in the block already because
+    // §5 puts them in stage 9 and the document carries them.
+    for field in [
+        "temperature",
+        "tint",
+        "exposure",
+        "highlights",
+        "shadows",
+        "blacks",
+        "contrast",
+        "vibrance",
+        "saturation",
+    ] {
+        assert!(
+            t.source.contains(field),
+            "the lowered shader does not mention `{field}`, so the front end cannot \
+             find its offset and that slider does nothing"
+        );
     }
 }

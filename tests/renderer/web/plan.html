@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>§12.2 — the front end's plan executor against wgpu</title>
+<style>
+  body { margin:0; background:#333; color:#F2F2F2;
+         font:13px "Adwaita Sans", Inter, system-ui, sans-serif }
+  canvas { image-rendering: pixelated; width:256px; height:256px; margin:16px }
+</style>
+<!-- The bundle is the *product's* modules, built by the same Vite that builds the app.
+     `cargo test -p photodesk-renderer-spike` emits the inputs beside it. -->
+<script type="module" src="generated/plan.js"></script>

@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the one window is allowed to ask the core for. Tauri v2 denies everything not listed here, which is the posture this application wants: the front end reads no files and writes none — it asks Rust to, and Rust is the only thing that ever touches the photograph (§12.3, invariant #1).",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "dialog:allow-save"
+  ]
+}

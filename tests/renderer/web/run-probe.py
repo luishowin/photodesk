@@ -215,6 +215,62 @@ def run_in_webkit2gtk_41(url, timeout, keep_open):
     Gtk.main()
 
 
+def report_plan(r, engine="?"):
+    """§12.2 across the webview boundary, reported the way the rest of this harness is:
+    the numbers first, and the verdict as a sentence about what they mean."""
+    if not r:
+        print("no result received")
+        return 1
+    print("=" * 72)
+    print(f"§12.2 — the front end's plan executor vs wgpu, via {engine}")
+    print("=" * 72)
+    if not r.get("ok"):
+        print(f"  FAILED  {r.get('error', 'no reason given')}")
+        return 1
+
+    direct, flipped = r.get("direct", {}), r.get("flipped", {})
+    # A blit flip is required exactly when the readback matched *directly* — see the
+    # note beside `blitFlip` in plan-entry.ts, which spells out why those two line up
+    # the way round they do.
+    wants_flip = bool(r.get("blitFlip"))
+    implied = "direct" if wants_flip else "flipped"
+    print(f"  passes          {r.get('passes')}")
+    print(f"  orientation     {r.get('orientation')}  "
+          f"(preview.ts blits {'flipped' if wants_flip else 'directly'}, "
+          f"which is right iff this reads {implied})")
+    print(f"  direct          max {direct.get('max')}  mean {direct.get('mean')}  "
+          f"over 1 code: {direct.get('over1')}")
+    print(f"  flipped         max {flipped.get('max')}  mean {flipped.get('mean')}  "
+          f"over 1 code: {flipped.get('over1')}")
+    missing = r.get("missingUniforms") or []
+    print(f"  uniforms found  {'all nine' if not missing else 'MISSING ' + ', '.join(missing)}")
+    print("-" * 72)
+
+    best = direct if r.get("orientation") == "direct" else flipped
+    fails = []
+    if missing:
+        fails.append("the lowered shader does not carry every document parameter, so at "
+                     "least one control binds to nothing")
+    if r.get("orientation") != implied:
+        fails.append(f"the readback matched {r.get('orientation')}, so preview.ts should "
+                     f"blit {'directly' if wants_flip else 'flipped'} and it does the "
+                     f"opposite — the photograph is presented upside down")
+    # One 8-bit code. Both sides ran the same shader on the same input, so the only
+    # honest budget is the difference between two roundings of one float — and §16 #15
+    # already records that an RGBA16F attachment can truncate rather than round.
+    if best.get("max", 999) > 1:
+        fails.append(f"the two renderers disagree by {best.get('max')} codes, which is "
+                     f"more than the one a stored f16 channel can differ by")
+
+    if fails:
+        for f in fails:
+            print(f"  FAIL  {f}")
+        return 1
+    print("  PASS  the webview and wgpu render the same plan to within one 8-bit code,")
+    print("        the nine parameters all bind by name, and the parity matches.")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -224,6 +280,13 @@ def main():
         help="epiphany is webkitgtk-6.0 (what Spike C measured); "
              "webkit2gtk-4.1 is what Tauri v2 embeds",
     )
+    ap.add_argument(
+        "--plan",
+        action="store_true",
+        help="run §12.2's front-end agreement instead of the capability probe: the "
+             "product's own graph executor, in this webview, against wgpu's render of "
+             "the same plan",
+    )
     ap.add_argument("--timeout", type=float, default=90.0)
     ap.add_argument("--keep-open", action="store_true")
     ap.add_argument("--json", help="also write the raw report here")
@@ -232,8 +295,15 @@ def main():
     global VERBOSE
     VERBOSE = args.verbose
 
-    if not os.path.exists(os.path.join(HERE, "generated", "adjust.frag")):
-        sys.exit("generated/adjust.frag missing — run: cargo test -p photodesk-renderer-spike")
+    page = "plan.html" if args.plan else "probe.html"
+    needed = "plan.js" if args.plan else "adjust.frag"
+    if not os.path.exists(os.path.join(HERE, "generated", needed)):
+        hint = (
+            "cargo test -p photodesk-renderer-spike && npm run build:harness"
+            if args.plan
+            else "cargo test -p photodesk-renderer-spike"
+        )
+        sys.exit(f"generated/{needed} missing — run: {hint}")
 
     # Threading is not optional: the page fetches both generated shaders with
     # Promise.all, and a single-threaded server serialises them into a stall that
@@ -245,7 +315,7 @@ def main():
     with Server(("127.0.0.1", 0), Handler) as srv:
         port = srv.server_address[1]
         threading.Thread(target=srv.serve_forever, daemon=True).start()
-        url = f"http://127.0.0.1:{port}/probe.html"
+        url = f"http://127.0.0.1:{port}/{page}"
         print(f"serving {HERE} at {url}", file=sys.stderr)
 
         if args.engine == "epiphany":
@@ -257,7 +327,7 @@ def main():
         with open(args.json, "w") as f:
             json.dump(RESULT, f, indent=2)
         print(f"raw report written to {args.json}", file=sys.stderr)
-    return report(RESULT, args.engine)
+    return report_plan(RESULT, args.engine) if args.plan else report(RESULT, args.engine)
 
 
 if __name__ == "__main__":

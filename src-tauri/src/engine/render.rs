@@ -218,6 +218,23 @@ impl EncodeUniform {
     }
 }
 
+/// Stage 13's uniform block, for a renderer that is not this one.
+///
+/// The preview runs the same `encode.wgsl` inside the webview (§7.2), and everything in
+/// this block is *derived* — the P3→destination matrix, the destination's luma weights,
+/// and §16 #11's policy constants. A TypeScript twin computing them would be the second
+/// source §0 freezes against, wearing a language barrier as a disguise. So the bytes
+/// cross the IPC boundary and the maths stays here.
+///
+/// `adjust.wgsl`'s block deliberately does *not* get a function like this: it is the
+/// document's nine parameters in order with omission meaning zero, so the front end
+/// writes it directly at offsets it reads back from the linked program — from the
+/// driver's own reflection of the shader that is running, which is one source fewer
+/// still.
+pub fn encode_uniform_bytes(dst: &Space) -> Vec<u8> {
+    EncodeUniform::new(dst, EXPORT_GAMUT_POLICY).bytes().to_vec()
+}
+
 /// A GPU device and the pipelines the graph's node kinds need.
 ///
 /// Built once and reused: creating a device per render would put adapter enumeration

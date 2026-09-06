@@ -1,0 +1,220 @@
+/* §10.3's window, and nothing that §10.1 does not permit.
+   Monochrome throughout: the only hue in this file is --warn, and it is used for a
+   failure message in a panel rather than anywhere near the canvas. */
+
+.app {
+  display: grid;
+  /* header · canvas · tabs · notices · panels. Notices are a row rather than an overlay
+     so they push the interface instead of covering a control — §11's "no operation
+     blocks the canvas" read literally, and the row collapses to nothing when empty. */
+  grid-template-rows: auto 1fr auto auto auto;
+  height: 100%;
+}
+
+/* ------------------------------------------------------------------ header bar */
+
+header {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+header .title {
+  text-align: center;
+  color: var(--text);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+header .chrome-button:first-child { justify-self: start; }
+header .chrome-button:last-child { justify-self: end; }
+
+.chrome-button {
+  appearance: none;
+  background: var(--surface-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 5px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+.chrome-button:hover:not(:disabled) { background: var(--hover); }
+/* §10.1: "disabled → text-mute, no opacity tricks". */
+.chrome-button:disabled { color: var(--text-mute); border-color: var(--border); cursor: default; }
+
+/* ---------------------------------------------------------------------- canvas */
+
+.stage {
+  position: relative;
+  background: var(--canvas);   /* #333333, not black — §10.1 says why */
+  overflow: hidden;
+  min-height: 0;
+}
+
+.stage canvas { display: block; width: 100%; height: 100%; }
+
+.empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  color: var(--text);
+}
+.empty p { margin: 2px 0; }
+.empty .dim { color: var(--text-dim); }
+
+/* ------------------------------------------------------------------------ tabs */
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  font: inherit;
+  padding: 9px 12px;
+  cursor: pointer;
+}
+.tab:hover:not(:disabled) { color: var(--text); }
+/* §10.1's "state without hue": active is text vs text-dim, not a colour. */
+.tab.active { color: var(--text); border-bottom-color: var(--text); }
+.tab:disabled { color: var(--text-mute); cursor: default; }
+
+/* ---------------------------------------------------------------------- panels */
+
+.panels {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 24px;
+  align-items: start;
+  padding: 14px 16px 18px;
+  background: var(--surface);
+}
+
+/* §10.3's mockup runs a slider the width of the window with its value at the right
+   edge, which is also what makes a 0.1× drag land somewhere useful. */
+.panel { display: grid; gap: 12px; min-width: 0; }
+
+.status {
+  color: var(--text-dim);
+  white-space: pre;
+  line-height: 1.7;
+  text-align: right;
+}
+
+/* --------------------------------------------------------------------- sliders */
+
+.slider { display: grid; gap: 5px; }
+
+.slider-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.slider-label { color: var(--text); }
+.slider.at-default .slider-label { color: var(--text-dim); }
+
+.slider-value {
+  appearance: none;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--text);
+  padding: 1px 5px;
+  cursor: text;
+  /* Tabular figures plus a reserved width: §10.2 requires the numeric not to shift the
+     layout while dragging, and a sign appearing at −0.01 would shift it on its own. */
+  min-width: 84px;
+  text-align: right;
+}
+.slider-value:hover { border-color: var(--border); background: var(--surface-raised); }
+.slider.at-default .slider-value { color: var(--text-dim); }
+
+.slider-entry {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  padding: 1px 5px;
+  min-width: 84px;
+  text-align: right;
+}
+
+.slider-track {
+  position: relative;
+  height: 18px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+/* The track itself is a 2px rule centred in an 18px hit area — the target is bigger
+   than the mark, which is what makes a thin control comfortable to grab. */
+.slider-track::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 8px;
+  height: 2px;
+  background: var(--border);
+  border-radius: 1px;
+}
+
+.slider-fill {
+  position: absolute;
+  top: 8px;
+  height: 2px;
+  background: var(--text-dim);
+  border-radius: 1px;
+}
+
+.slider-handle {
+  position: absolute;
+  top: 3px;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border-radius: 50%;
+  background: var(--text);
+  pointer-events: none;
+}
+.slider.at-default .slider-handle { background: var(--text-dim); }
+
+/* -------------------------------------------------------------------- notices */
+
+.notices:not(:empty) {
+  display: grid;
+  gap: 6px;
+  padding: 10px 16px 0;
+  background: var(--surface);
+}
+
+/* §10.1 forbids colour "adjacent to the image canvas", so a notice is monochrome and
+   sits below the panels rather than over the photograph. --warn earns its place on a
+   failure and nowhere else. */
+.notice {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 8px 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+.notice.error { border-left: 3px solid var(--warn); }

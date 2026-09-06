@@ -6,7 +6,9 @@ Cargo.lock.bak
 # Front end
 node_modules/
 dist/
-.vite/
+
+# Tauri writes these from tauri.conf.json and capabilities/ on every build
+/app/gen/schemas/
 
 # PhotoDesk caches — regenerable by definition, never committed
 .photodesk/

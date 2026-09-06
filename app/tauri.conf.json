@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PhotoDesk",
+  "version": "0.1.0",
+  "identifier": "org.photodesk.PhotoDesk",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "PhotoDesk",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600,
+        "theme": "Dark"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'"
+    },
+    "withGlobalTauri": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "rpm"
+    ],
+    "icon": [
+      "icons/icon.png"
+    ],
+    "category": "Graphics",
+    "shortDescription": "A display-referred photo editor",
+    "longDescription": "PhotoDesk edits finished images \u2014 HEIF, JPEG, PNG \u2014 taking the manufacturer's rendering as the starting point rather than reconstructing scene radiance."
+  }
+}

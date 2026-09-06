@@ -1,0 +1,38 @@
+[package]
+name = "photodesk-app"
+description = "PhotoDesk's window: the Tauri shell around the headless core."
+version = "0.1.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# This crate exists so that `photodesk` does not have to.
+#
+# §13 says `src-tauri/` is "a library first, an application later", and the reason is
+# §12.3 and §12.1: source preservation and the golden images have to run headless on
+# every commit, which is criterion 1 of the gate Spike A failed RapidRAW on. A crate
+# that links webkit cannot run them. An optional `tauri` feature on the library would
+# have kept the layout tidier and left `--all-features` able to break the invariant
+# quietly; a separate crate cannot be linked into the tests by accident.
+#
+# So: `photodesk` is the whole product and knows nothing about a window. This is the
+# window, and it holds no logic that a test would want.
+
+[dependencies]
+photodesk = { path = "../src-tauri" }
+# No `protocol-asset`: nothing is loaded into the webview by URL. The proxy crosses
+# once as raw IPC bytes and the source file is read by Rust, which keeps the one
+# thing §12.3 protects — the photograph on disk — off the webview's reach entirely.
+tauri.workspace = true
+tauri-plugin-dialog.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Already in the tree beneath wgpu. Direct here because the preview needs the product's
+# WGSL lowered to GLSL ES 3.00, and doing it at runtime means the webview cannot be
+# handed a stale shader — there is no build step to forget to run.
+naga.workspace = true
+half.workspace = true
+
+[build-dependencies]
+tauri-build.workspace = true

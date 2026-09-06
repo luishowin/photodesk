@@ -1,0 +1,52 @@
+/* §10.1's table, verbatim. The values are the specification, not a starting point.
+   Anything that wants a colour not in here needs §10.1 changed first. */
+
+:root {
+  --canvas: #333333;         /* surround around the image */
+  --surface: #1e1e1e;        /* panels, sidebars */
+  --surface-raised: #252525; /* popovers, menus, active panel */
+  --border: #3a3a3a;         /* dividers, control tracks */
+  --text: #f2f2f2;           /* primary labels, numerics */
+  --text-dim: #8c8c8c;       /* secondary, units, inactive */
+  --text-mute: #5a5a5a;      /* disabled */
+  --focus: #ffffff;          /* 2px focus ring */
+  --warn: #e71d36;           /* warnings and clipping only */
+
+  /* §10.1's "state without hue", as one place rather than nine sprinkled rgba()s. */
+  --hover: #2a2a2a;          /* +6% surface luminance */
+
+  /* §10.2. Adwaita Sans is the GNOME system font, so it is already on the target
+     platform with nothing to download. No serifs anywhere. */
+  --ui: "Adwaita Sans", Inter, system-ui, -apple-system, sans-serif;
+  /* Tabular figures are load-bearing: §10.2 requires `+0.35 EV` and `−12` not to shift
+     the layout while dragging, and proportional digits do exactly that. */
+  --numeric: "JetBrains Mono", ui-monospace, "Cascadia Mono", Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--surface);
+  color: var(--text);
+  font: 13px/1.4 var(--ui);
+  -webkit-font-smoothing: antialiased;
+  /* This is a photo editor. A drag that selects the interface instead of moving a
+     slider is the single most common way a hand-written control feels broken. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* §11: `Esc` dismisses, and a focus ring has to be visible on a dark ground. 2px white,
+   per §10.1, and only for keyboard focus — a ring that appears on every pointer click
+   reads as a stuck state. */
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+.numeric {
+  font-family: var(--numeric);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}

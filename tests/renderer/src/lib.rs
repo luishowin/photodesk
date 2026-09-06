@@ -7,99 +7,38 @@
 //! inside what GLSL ES 3.0 has, so the branch is live again and this crate tests it
 //! rather than assuming either outcome.
 
-use naga::back::glsl;
-use naga::valid::{Capabilities, ValidationFlags, Validator};
-
-/// What came out of a transpilation attempt.
-#[derive(Debug)]
-pub struct Transpiled {
-    pub source: String,
-    /// Bindings naga reassigned or dropped. WebGL2 has no descriptor sets, so
-    /// `@group`/`@binding` has to collapse onto plain uniform locations, and knowing
-    /// *how* is the difference between a working bind path and a silent mismatch.
-    pub uniform_names: Vec<String>,
-}
-
-#[derive(Debug)]
-pub enum TranspileError {
-    Parse(String),
-    Validate(String),
-    Backend(String),
-}
-
-impl std::fmt::Display for TranspileError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TranspileError::Parse(e) => write!(f, "WGSL parse failed:\n{e}"),
-            TranspileError::Validate(e) => write!(f, "WGSL validation failed:\n{e}"),
-            TranspileError::Backend(e) => write!(f, "GLSL backend refused it:\n{e}"),
-        }
-    }
-}
+pub use photodesk::engine::glsl::{GlslError as TranspileError, Lowered as Transpiled, lower};
 
 /// Lower one WGSL entry point to GLSL ES 3.00.
 ///
-/// `version` is pinned to ES 3.00 deliberately: that is what WebGL2 exposes, and
-/// letting naga pick a desktop profile would produce source the browser cannot
-/// compile while reporting success here.
+/// **This now delegates to `photodesk::engine::glsl`, and that is the point of the
+/// move.** Spike C owned this function while it was answering a question; the answer
+/// was yes, so §7.2's preview lowers the product's shaders at startup and the lowering
+/// is product code. A copy kept here would mean the negative control below — that
+/// compute is *refused* — was asserting it about a function nothing ships, which is the
+/// shape of "green and meaningless" §2.2 already caught once in the colour harness.
 pub fn to_glsl_es300(
     wgsl: &str,
     entry_point: &str,
     stage: naga::ShaderStage,
 ) -> Result<Transpiled, TranspileError> {
-    let module = naga::front::wgsl::parse_str(wgsl)
-        .map_err(|e| TranspileError::Parse(e.emit_to_string(wgsl)))?;
-
-    // Validate with the capabilities WebGL2 actually has — not the default set, which
-    // would wave through constructs the target cannot express.
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .map_err(|e| TranspileError::Validate(format!("{e:?}")))?;
-
-    let options = glsl::Options {
-        version: glsl::Version::Embedded {
-            version: 300,
-            is_webgl: true,
-        },
-        ..Default::default()
-    };
-    let pipeline_options = glsl::PipelineOptions {
-        shader_stage: stage,
-        entry_point: entry_point.to_string(),
-        multiview: None,
-    };
-
-    let mut source = String::new();
-    let mut writer = glsl::Writer::new(
-        &mut source,
-        &module,
-        &info,
-        &options,
-        &pipeline_options,
-        naga::proc::BoundsCheckPolicies::default(),
-    )
-    .map_err(|e| TranspileError::Backend(format!("{e:?}")))?;
-
-    let reflection = writer
-        .write()
-        .map_err(|e| TranspileError::Backend(format!("{e:?}")))?;
-
-    let mut uniform_names: Vec<String> = reflection
-        .uniforms
-        .values()
-        .cloned()
-        .chain(reflection.texture_mapping.keys().cloned())
-        .collect();
-    uniform_names.sort();
-
-    Ok(Transpiled {
-        source,
-        uniform_names,
-    })
+    lower(wgsl, entry_point, stage)
 }
 
-/// The shader under test: §5 stages 2–9 fused into one pass.
+/// Spike C's own shader — deliberately **not** the product's.
+///
+/// §2.3 said the outcome "decides how every shader in the project is written", so this
+/// one was built to be hostile: a large uniform block with fixed-size arrays in it,
+/// dynamic indexing, a data-dependent loop bound and a switch. It is a stress test that
+/// stays a stress test, and it exercises constructs the product's shaders do not have
+/// yet — curves and HSL bands arrive at v0.3.
+///
+/// The product's fused pass is [`PRODUCT_ADJUST_WGSL`], and both are lowered here: this
+/// one to keep the headroom finding honest, that one because it is what actually runs.
 pub const ADJUST_WGSL: &str = include_str!("../shaders/adjust.wgsl");
+
+/// §5 stages 2–9 as the product fuses them — `shaders/photodesk/adjust.wgsl`.
+pub const PRODUCT_ADJUST_WGSL: &str = photodesk::engine::render::ADJUST_WGSL;
 
 /// §5 stage 13 — the output encode, with §16 #11's gamut policy in it.
 ///
@@ -112,4 +51,4 @@ pub const ADJUST_WGSL: &str = include_str!("../shaders/adjust.wgsl");
 /// separate *path*: stage 13 runs once at the end of the chain while stages 2–12 run
 /// once per layer (§5), and §0's one-shader-source invariant is about preview and
 /// export sharing a source, not about the whole pipeline being one file.
-pub const ENCODE_WGSL: &str = include_str!("../../../shaders/photodesk/encode.wgsl");
+pub const ENCODE_WGSL: &str = photodesk::engine::render::ENCODE_WGSL;

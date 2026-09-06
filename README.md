@@ -10,17 +10,17 @@ The test for any feature: **does it shorten the path between opening a photo and
 
 ---
 
-## Status — Phase 0 complete, v0.1 started
+## Status — v0.1 runs
 
-There is no application yet. The architecture spec committed to three spikes before any product code, on the argument that discovering their answers in month four is far more expensive than spending three weeks on them now — **all three have run**, and the first of v0.1's parts is in the tree.
+There is an application. The architecture spec committed to three spikes before any product code, on the argument that discovering their answers in month four is far more expensive than spending three weeks on them now — **all three ran**, and v0.1 opens a photograph, edits it and exports it.
 
 | Phase | State |
 |---|---|
-| Spec | v0.19 — [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Spec | v0.20 — [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Spike A — RapidRAW fork audit | **complete — gate failed, no fork.** [`docs/FORK-AUDIT.md`](docs/FORK-AUDIT.md) |
 | Spike B — colour validation harness | **complete — green, working space frozen.** [`docs/SPIKE-B.md`](docs/SPIKE-B.md) |
 | Spike C — preview renderer | **complete — green, preview path frozen.** [`docs/SPIKE-C.md`](docs/SPIKE-C.md) |
-| v0.1 | **the headless half is done** — document model, graph compile, decode, render and export. What remains is the front end |
+| v0.1 | **runs** — open a photograph, drag six sliders, compare against the original, export |
 
 **Spike A failed its gate on 2026-09-05, which is the outcome it was run to find.** RapidRAW's per-pixel chain is one compute kernel in which stage order is the literal statement order, and vendored shaders are read-only — so "pipeline order is explicit and versioned", a frozen item, could not be implemented inside the fork. Three further findings said the fork would not have supplied much of what it was wanted for: RapidRAW has **no colour management at all**, **cannot open HEIF**, and on Linux ships every preview frame as a lossy JPEG over IPC. PhotoDesk builds against `rawler` + `libheif` + its own shaders instead.
 
@@ -41,6 +41,14 @@ Writing it found a bug in the specification, in the one workflow §14 gives v0.1
 The last format gap closed on 2026-09-06: **PNG, and therefore screenshots.** §1 has named a screenshot a native subject since the first draft and §4 wrote it a colour rule, but the decoder read HEIF and JPEG only — so "assume sRGB if untagged" was being demonstrated against an untagged JPEG. The colour half was small, as expected; what PNG actually brought was a container with opinions — palette, sub-byte samples, greyscale, sixteen-bit, Adam7, alpha — and the decision that mattered was resolving all of them *before* §4's chain rather than as branches inside it. Alpha is the one that is a judgement call: it is composited onto white, in linear light, because dropping it is not the neutral option it looks like — the RGB under a transparent pixel is whatever the compositor last wrote there, so a window screenshot's rounded corners would arrive carrying arbitrary colour.
 
 It also closed a half-claim. `export` has written PNG since v0.1's export landed, and nothing could read the `iCCP` it deflates back; PNG is the only format in v0.1 where a round trip is an equality rather than a tolerance, and a photograph now goes out through the exporter and back in through the decoder to within **0.00293** — under the ~0.004 that one 8-bit code is worth at that part of the curve.
+
+**And then a window, which is the first part a person touches.** §14's v0.1 is "open a HEIF → six sliders → before/after → export, colour correct end to end", and the last clause of that was unreachable until there was a front end. Tauri, WebGL2, and §11's slider written by hand — §10.3 accepted that bill knowingly, on the argument that a component library's slider does none of `Shift` = 0.1× travel, `Ctrl` = 10×, double-click to reset, scroll only when hovered, and one-gesture-one-undo-entry, "so it would be overridden rather than used". Zero runtime dependencies, and the bundle is 21 kB.
+
+The window is a **separate crate** from the library, which is the whole shape of the arrangement: `photodesk` has no `tauri` dependency and now never will, because §12.3's source preservation and §12.1's golden images have to run headless on every commit and a crate that links webkit cannot. An optional feature would have been tidier and would have left `--all-features` able to break that quietly.
+
+**§12.2 is now measured across the boundary it was written for.** Spike C proved the *path* with a stress shader and a hand-written page; this is the product. The front end's own modules — `src/graph/execute.ts` and `src/canvas/gl.ts`, the ones the app imports — run inside webkit2gtk-4.1, the binding Tauri embeds, over inputs Rust emitted, and are compared against wgpu's render of the same compiled plan. They agree to **max 0 of 255 across 12,288 channels**: not close, identical after quantisation, with all nine of the document's parameters bound by name. The presented canvas was then checked once against the same reference and is pixel-identical to it — and 168 codes away from it upside down, which is the measurement that pins the one step the harness cannot reach.
+
+That last point is not pedantry. WGSL is authored for wgpu, whose framebuffer origin is top-left; GL's is bottom-left, so **every preview pass inverts the image**, and the pass count changes with the number of layers. It is resolved once at a blit rather than by convention — which also makes fit-to-window free and the before/after split a second blit rather than a second shader.
 
 See [`docs/DECISIONS.md`](docs/DECISIONS.md) for what has been decided and why, and [`docs/REVIEW-2026-09-05.md`](docs/REVIEW-2026-09-05.md) for what is still open.
 
@@ -89,13 +97,16 @@ A seventh on the same day: **the export gamut policy**, above. It came with a co
 
 ## Picking up
 
-**Phase 0 is done, v0.1's headless half is built, and what remains is the front end** — §14's v0.1 is a photograph a person can open, drag six sliders on, compare against the original, and export, which means Tauri, the WebGL2 preview executing a compiled plan, and §11's slider contract hand-written. Building it needs four devel packages (`webkit2gtk4.1-devel`, `gtk3-devel`, `librsvg2-devel`, `openssl-devel`).
+**v0.1 runs, so what is next is v0.2** — crop, rotate, straighten; presets; undo/redo at gesture granularity. Undo already commits per gesture; what v0.2 adds is the panel and the geometry node, which the plan executor currently refuses by name.
 
-Three things stood in front of v0.1 and none does now:
+One thing worth doing before it, and it is not a measurement: **the six sliders have never been dragged over a real photograph by a person.** Everything here is measured, and measurement is not use.
+
+Four things stood in front of v0.1 and none does now:
 
 1. ~~**Name the export gamut-mapping policy.**~~ Closed — clip chroma at constant luminance, measured rather than picked. [`tests/color/tests/gamut_policy.rs`](tests/color/tests/gamut_policy.rs), §4, and the entry in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 2. ~~**Confirm webkit2gtk-4.1.**~~ Closed — the 4.1 binding returns identical capabilities and identical pixel agreement to webkitgtk-6.0, on the same machine on the same day.
 3. ~~**PNG input (§16 #17).**~~ Closed — §1's screenshot is a file the app can open, and the exporter's PNG has a reader.
+4. ~~**A window.**~~ Closed — and with it the discovery that nothing had ever lowered the product's own fused pass to GLSL, because the spike lowers its stress shader and wgpu never goes through GLSL at all. It lowers. The way that would have failed is a preview that will not start, found on a first run rather than by a test.
 
 Two findings arrived alongside them, both of which land on the golden-image suite before its first `--bless`. **An RGBA16F colour attachment can truncate toward zero rather than round to nearest** — measured on RADV/RENOIR, where 48,020 of 49,152 stored channels are bit-exactly the reference truncated — which is a full-step bias that is the driver's doing and not the shader's. And a green test can quietly change what it measures: freezing the gamut policy took the colour harness's P3→sRGB test from mean ΔE 0.0807 to **1.4183 against its own 1.5 threshold**, still passing and no longer about transform fidelity at all, because its reference converter clips and the pipeline no longer did.
 
@@ -116,7 +127,7 @@ The front end is settled: **no framework**, TypeScript and Vite (§10.3).
 | Version | Scope | Estimate |
 |---|---|---|
 | ~~0.0~~ | ~~The three spikes.~~ **Complete** | 3 weeks est., 1 day actual |
-| 0.1 | Open a HEIF → exposure, contrast, highlights, shadows, blacks, temperature → before/after → export, colour-correct end to end. Document model, graph compile, source-preservation and golden tests running | 3 weeks |
+| ~~0.1~~ | ~~Open a HEIF → exposure, contrast, highlights, shadows, blacks, temperature → before/after → export, colour-correct end to end.~~ **Runs.** Golden tests are §16 #14/#15, still open | 3 weeks est. |
 | 0.2 | Crop, rotate, straighten. Presets, copy/paste edits. Undo/redo at gesture granularity | 2 weeks |
 | 0.3 | Colour: curves, HSL, grading wheels, vibrance | 3 weeks |
 | 0.4 | Masks: brush, linear, radial, luminance, colour range, composition | 4 weeks |
@@ -130,7 +141,14 @@ v0.1 deliberately excludes curves and HSL. They're the fun part, which is exactl
 
 ## Running what exists
 
-There is no application to run — `src-tauri/` is a library and links no webview yet, deliberately, so that §12.3's source-preservation test and §12.1's golden images can run headless on every commit. The two Phase 0 harnesses are permanent suites rather than scaffolding: §13 keeps them because every later golden-image test sits on top of what they check.
+```sh
+npm install && npm run build          # the front end; dist/ is what the window loads
+cargo run -p photodesk-app [path]     # a path opens straight into the editor
+```
+
+Building the window needs four devel packages: `webkit2gtk4.1-devel`, `gtk3-devel`, `librsvg2-devel`, `openssl-devel`. `npm run dev` on its own does not work and says so — without the Rust core there is nothing to decode a photograph.
+
+`src-tauri/` is still a library that links no webview, deliberately, so that §12.3's source-preservation test and §12.1's golden images run headless on every commit. The two Phase 0 harnesses are permanent suites rather than scaffolding: §13 keeps them because every later golden-image test sits on top of what they check.
 
 ```sh
 cargo test --workspace                                   # everything, 131 tests, ~4 s
@@ -146,6 +164,14 @@ The browser half of Spike C needs the generated GLSL, which `cargo test -p photo
 ```sh
 python3 tests/renderer/web/run-probe.py                          # webkitgtk-6.0, via Epiphany
 python3 tests/renderer/web/run-probe.py --engine webkit2gtk-4.1  # what Tauri v2 embeds
+```
+
+§12.2's front-end agreement is the same machinery with `--plan`, and it needs the bundle as well as the fixtures:
+
+```sh
+cargo test -p photodesk-renderer-spike
+npm run build:harness
+python3 tests/renderer/web/run-probe.py --engine webkit2gtk-4.1 --plan
 ```
 
 `cargo test -p photodesk` also regenerates `src/document/generated/document.ts` and fails if it moved, so a schema change is: edit the Rust, run the tests once, commit both.

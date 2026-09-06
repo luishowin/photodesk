@@ -63,6 +63,31 @@ pub enum Notice {
     PipelineIsOlder { document: u32, current: u32 },
 }
 
+impl std::fmt::Display for Notice {
+    /// §6.3 says "explain" and "warn", which are user-facing verbs, so the sentences
+    /// live next to the rules that produce them rather than in whatever renders them.
+    /// A front end that has to compose this text from an enum tag is a second place
+    /// where §6.3's behaviour is described.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Notice::Migrated { from, to, steps } => write!(
+                f,
+                "this document was written by schema version {from} and has been \
+                 migrated to {to} in {steps} step{}. Your file is unchanged until you \
+                 save.",
+                if *steps == 1 { "" } else { "s" }
+            ),
+            Notice::PipelineIsOlder { document, current } => write!(
+                f,
+                "this document was rendered under pipeline version {document} and this \
+                 build is on {current}. It is being shown exactly as it was saved — \
+                 re-rendering it on the current pipeline may change how it looks, so \
+                 that is yours to ask for rather than mine to do quietly."
+            ),
+        }
+    }
+}
+
 /// Why a document opened read-only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReadOnly {

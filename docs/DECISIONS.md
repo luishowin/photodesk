@@ -838,3 +838,73 @@ The palette fixture lied too, more quietly. A 4-bit index packs two pixels to a 
 - **One conversion path from a decoded buffer to the working space.** FROZEN.
 - **PNG's `cHRM`/`gAMA` are not read as a colour tag.** PROVISIONAL, exit condition named.
 - §16 #17 closed. What remains before v0.1 ships is the front end.
+
+---
+
+## 2026-09-06 — v0.1's front end: the window, and §12.2 measured through the product; spec v0.19 → v0.20
+
+Everything before today was headless. §14's v0.1 is "open iPhone HEIF → exposure, contrast, highlights, shadows, blacks, temperature → before/after → export → colour correct end to end", and the last clause of that has never been reachable by a person. It is now. `app/`, `src/`, 3 new tests, and the workspace is at 134.
+
+The four devel packages Tauri needs were installed this morning, which is what unblocked it.
+
+### The window is a separate crate, and that is the whole shape of the thing
+
+§13 said `src-tauri/` was "a library first, an application later", which invited the obvious move: add `tauri` to the library and a `main.rs` beside it. That would have quietly cost the invariant the arrangement exists for. §12.3's source preservation and §12.1's golden images run headless on every commit — criterion 1 of the gate Spike A failed RapidRAW on — and a crate that links webkit cannot run them.
+
+An optional `tauri` feature was the tidier option and is the one not taken: `cargo test --all-features` would enable it, and the invariant would be one flag away from gone with nothing to notice. **`photodesk-app` is a separate crate**, so it cannot be linked into the library's tests by accident. `photodesk` still has no `tauri` dependency and now never will. Register item.
+
+### What crosses the boundary, and the three things that would have been twins
+
+§7.2 puts the preview inside the webview precisely so that pixels do not cross per frame. So the proxy crosses **once**, on open, as raw RGBA f16 bytes — the same array the GPU will hold, 16 MB at 2 MP, where serialising it as JSON numbers would be about 100 MB of text to produce, parse and discard. After that a slider drag touches no IPC at all: nine floats into a uniform buffer, and draw.
+
+Three things cross that a front end could have computed for itself, and each is here because computing it would have made a second source of something §0 freezes at one.
+
+**The shaders.** `shaders/photodesk/` lowered to GLSL ES 3.00 by naga — and lowered **at startup rather than at build time**. A generated `.frag` on disk is an artefact that can go stale, and a stale one is the preview rendering last week's shader while the export renders this week's: the WYSIWYG drift §0 exists to prevent, arriving through a forgotten build step instead of through a second file. It costs a few milliseconds once. Register item.
+
+The lowering moved into the product for the same reason. It was Spike C's, and Spike C's question is answered; `tests/renderer/` now calls `engine::glsl` rather than keeping its own copy, so the negative control asserting that **compute is refused** is asserting it about the code that ships. That harness had drifted into exactly the shape §2.2 caught in the colour harness once already — green, and about itself.
+
+**The compiled graph**, because §0 says it is compiled once and in Rust. A parameter change is therefore a round trip. It does not block the draw: the preview keeps rendering the last plan until the new one lands, and a compile that finishes after a newer one started is dropped, which is what stops a fast drag from rendering out of order.
+
+**Stage 13's uniform.** Its matrix, luma weights and gamut constants are *derived* (§16 #11), so a TypeScript copy would drift silently. `adjust.wgsl`'s block deliberately gets no such function: it is the document's nine parameters in order with omission meaning zero, so the front end writes it directly — at offsets it reads back from the **linked program**, which is one source fewer still. naga renames `@group`/`@binding` into whatever GLSL can express (`_group_0_binding_0_fs.exposure` today), so a table of offsets in TypeScript would go stale as one slider that does nothing. Register item, and `tests/renderer/` asserts the lowered source still names all nine.
+
+### An omission worth naming: nothing had ever lowered the product's fused pass
+
+`tests/renderer/` lowers **Spike C's** `adjust.wgsl`, which is a deliberate stress shader and not a draft of the real one. `render.rs` hands WGSL straight to wgpu, which never goes through GLSL. So `shaders/photodesk/adjust.wgsl` — the file the six sliders actually drive — **had never been lowered by anything**, and "one shader source, preview and export" was enforced for stage 13 and assumed for stages 2–9.
+
+It lowers. But the way that would have failed is a preview that will not start, on the one shader v0.1 is about, discovered on the first run rather than by a test. There is a test now.
+
+### §12.2, measured through the product rather than through a harness
+
+Spike C proved the *path* with a stress shader and a hand-written page. This is the product: `tests/renderer/web/plan.html` runs **`src/graph/execute.ts` and `src/canvas/gl.ts` — the modules `main.ts` imports**, bundled by the same Vite that builds the app — inside webkit2gtk-4.1, over inputs Rust emitted, and compares against wgpu's render of the same compiled plan.
+
+**Max 0 of 255, across 12,288 channels.** Not close: identical after quantisation. All nine parameters bound by name, and the orientation checked rather than assumed. A fixture with every one of v0.1's six controls off its default, so a parameter bound to the wrong offset cannot hide behind a zero — and in-gamut, borrowing §12.2's precondition for §12.2's reason.
+
+The whole chain was then confirmed once on screen: the presented canvas, cropped out of a WebKit snapshot, is **pixel-identical to the wgpu reference and 168 codes away from it upside down**. That is the one measurement covering the blit itself, which the harness cannot reach.
+
+### Two GL facts the shaders' author does not have to know
+
+Both are resolved once, at the edge, so that `shaders/photodesk/` stays authored for one target.
+
+**Every pass inverts the image.** WGSL is authored for wgpu, whose framebuffer origin is top-left; GL's is bottom-left, so the same `uv` expression addresses the opposite end. Spike C hit this and honestly scored both orientations rather than picking one. An odd pass count presents the photograph upside down, and the pass count changes with the number of layers, so it cannot be settled by convention. `preview.ts` draws the chain into offscreen targets and resolves the parity at a **blit** — which earns its place twice more, because scaling to fit is then free and §11's split view is a second blit rather than a second shader.
+
+The relationship is not the obvious one, and getting it backwards was the first thing that happened: a *direct* readback means the image's top row sits at `v = 0`, and the canvas's `y = 0` is its **bottom**, so presenting it upright requires reading it backwards. A needed blit flip corresponds to a direct readback, not to a flipped one. The harness now states that in full beside the field that checks it.
+
+**`blitFramebuffer` refuses float → fixed-point.** ES 3.0 §4.3.2: copying between a floating-point read buffer and a fixed-point draw buffer is `INVALID_OPERATION`, and the canvas is fixed-point. So the plan's **output** node draws into an 8-bit target — which is right anyway, since stage 13 has encoded for the display by then and there is nothing left for more bits to carry. Worth knowing because the failure raises nothing the user can see: it presents as a blank canvas.
+
+### §11, hand-written, which is the bill §10.3 said would come
+
+§10.3 accepted the cost of no framework on the argument that "a component library's slider does none of that, so it would be overridden rather than used". `src/panels/slider.ts` is that control, and §11's table is implemented row by row: `Shift` 0.1× travel, `Ctrl` 10×, double-click to reset, click the value for numeric entry, `↑`/`↓` one step and a tenth with `Shift`, scroll only when the control is hovered.
+
+The row that shapes the API is **one completed gesture is one undo entry**. So the slider has two callbacks rather than one: `onInput` fires continuously and drives the render, `onCommit` fires once on pointer-up and drives history. A drag that ends where it began commits nothing at all.
+
+One detail is §6.1's rather than §11's. Temperature is stored as a **delta** from 6504 K — stage 2 runs once per layer, so two layers each declaring an absolute 5200 K would describe nothing — and displayed as an absolute figure, because that is what a photographer reads. The travel is chosen so the *displayed* ends are round: 4000 K to 10000 K, and 4000 K is exactly where `daylight_xy` stops being defined and starts clamping.
+
+And a parameter set back to its default is **removed** from the document rather than written as zero. §6.1's omitted-key rule makes those two different documents with the same appearance, and the difference is load-bearing the moment a preset merges into the stack: a preset that says nothing about exposure has to leave exposure alone. Writing zeros would turn every document into a preset that overrides everything.
+
+### Register
+
+- **The window is a separate crate from the library.** FROZEN.
+- **The preview lowers WGSL at startup, not at build time.** FROZEN.
+- **Uniform offsets are read back from the linked program, never tabulated.** FROZEN.
+- §16 #16's UI half now exists (`src/panels/light.ts`); the file's own opinion is still open.
+- §16 #7 has a placeholder icon, which is not a decision and is marked as one.

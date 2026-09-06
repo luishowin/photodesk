@@ -1,9 +1,9 @@
 # PhotoDesk — Architecture Specification
 
-**Version:** 0.19
+**Version:** 0.20
 **Author:** Luis Howin
 **Platform:** Fedora Workstation / GNOME
-**Status:** Master spec for the coding agent. **Phase 0 complete.**
+**Status:** Master spec for the coding agent. **Phase 0 complete; v0.1 runs.**
 
 ---
 
@@ -61,6 +61,9 @@ This table is the contract. Anything not listed is undecided and needs a decisio
 | **An alpha channel is composited onto white, in linear light, at decode** | **FROZEN** | The pipeline has no alpha channel and v1 will not grow one, so a file that has one is resolved at the door. Onto white rather than dropped, because dropping is not neutral — the RGB under a transparent pixel is whatever last wrote there, so a window screenshot's rounded corners would arrive carrying arbitrary colour. In linear light because that is the only place the arithmetic is right: half-transparent black over white is 0.502 linear, and the same composite on encoded values is 0.216. Reported on `Decoded` for the reason the gain-map skip is (§4). |
 | **One conversion path from a decoded buffer to the working space** | **FROZEN** | Three decoders hand back three shapes — libheif pads its rows, PNG can be grey, sixteen-bit, paletted or transparent — and the alternative to describing them is a conversion per format. Same argument as one shader source, at a smaller scale and with the same failure mode: two paths agree until they do not, and nothing is checking. Container features are flattened *before* the chain (§4), which is what keeps it one path rather than one path with branches. |
 | **PNG's `cHRM`/`gAMA` are not read as a colour tag** | PROVISIONAL | → a file that carries them without `iCCP` or `sRGB`, in a corpus rather than in the abstract. The two chunks that *name* a space are read; these two *describe* one numerically, and reading them means a nearest-space classifier — which is the shape §4 has already been bitten by once, Adobe RGB sitting nearer to Display P3 than to sRGB. Until such a file exists the cost of not reading it is that it is treated as untagged, which is §4's stated guess anyway. |
+| **The window is a separate crate from the library** | **FROZEN** | `photodesk` has no `tauri` dependency and never will; `photodesk-app` has both. §12.3's source preservation and §12.1's golden images run headless on every commit — criterion 1 of the gate Spike A failed RapidRAW on — and a crate that links webkit cannot run them. An optional `tauri` feature would have kept the layout tidier and left `cargo test --all-features` able to break the invariant quietly. A crate cannot be linked into the tests by accident. |
+| **The preview lowers WGSL at startup, not at build time** | **FROZEN** | A generated `.frag` on disk is a second artefact that can be stale, and a stale one is the preview rendering last week's shader while the export renders this week's — the WYSIWYG drift §0 exists to prevent, arriving through a forgotten build step rather than through a second source file. `engine::glsl` runs in a few milliseconds, once, and there is nothing to keep in sync. It is product code, so `tests/renderer/` calls it rather than keeping a copy. |
+| **Uniform offsets are read back from the linked program, never tabulated** | **FROZEN** | naga renames `@group`/`@binding` into whatever GLSL ES 3.00 can express — `_group_0_binding_0_fs.exposure` today — so a table of offsets in TypeScript would be a second description of a layout naga owns, going stale silently as one slider that does nothing. The front end asks the driver's own reflection of the shader that is about to run. Checked by `tests/renderer/`, which asserts the lowered source still names all nine of the document's parameters. |
 | **No front-end framework: TypeScript + Vite, zero runtime dependencies** | **FROZEN** | The canvas needs none (Spike C), and §10/§11 specify the interaction surface closely enough that a component library would be overridden rather than used. Cost accepted knowingly: panels, undo and the keymap are hand-written, and the bill arrives at v0.2–v0.7, not v0.1. |
 
 ---
@@ -493,13 +496,17 @@ EXPORT ──► tiled full-res ──► same shader chain ──► encode
 
 Proxy size `min(2 × viewport_longest_edge, source_longest_edge)` — ~2 MP at 1080p.
 
-### 7.2 Where the shaders run — *provisional, pending Spike C*
+### 7.2 Where the shaders run — *settled, and now running*
 
 Tauri on Linux uses a GTK/WebKit webview, and the native-wgpu-behind-the-webview approach doesn't work there — the two contend for the same surface and flicker (tauri-apps/tauri#9220).
 
 **Candidate:** preview in the webview via WebGL2; export in Rust via wgpu; author once in WGSL and transpile to GLSL ES 3.0 with `naga` at build time. Zero per-frame IPC, and the interactive path lands in a technology already written fluently here.
 
 **Constraint, measured (§2.1):** `naga`'s GLSL backend cannot lower compute shaders, storage textures or storage buffers to GLSL ES 3.0, because those constructs do not exist there. That killed the candidate only while the chain to be transpiled was RapidRAW's. Ours is written fragment-first (§2.3), which stays inside what GLSL ES 3.0 has. **Fallback if transpilation still fails:** hand-write the preview chain in GLSL. Roughly fifteen fragment shaders of well-understood per-pixel math — tedious, not hard. WebGPU in WebKitGTK is the eventual clean answer but not yet dependable.
+
+**Measured through the product, 2026-09-06.** Spike C proved the *path* with a stress shader and a hand-written harness page. v0.1's front end is the product, and it is measured the same way: `tests/renderer/web/plan.html` runs **`src/graph/execute.ts` and `src/canvas/gl.ts`, the modules `main.ts` imports**, inside webkit2gtk-4.1, over inputs Rust emitted — and compares against wgpu's render of the same compiled plan. The two agree to **max 0 of 255 across 12,288 channels**: not close, identical after quantisation. All nine of the document's parameters bind by name, and the orientation parity is checked rather than assumed. Run it with `python3 tests/renderer/web/run-probe.py --engine webkit2gtk-4.1 --plan`.
+
+**Two things about GL that the shaders' author does not have to know, because they are resolved once at the edge.** WGSL is authored for wgpu, whose framebuffer origin is **top-left**; GL's is **bottom-left**, so the same `uv` expression addresses the opposite end and *every pass inverts the image*. An odd pass count would present the photograph upside down, and the pass count changes with the number of layers — so it cannot be settled by convention. `canvas/preview.ts` draws the whole chain into offscreen targets and resolves the parity at a **blit**, which also makes fit-to-window and §11's split view free. And the plan's **output** node draws into an 8-bit target rather than an f16 one: stage 13 has encoded for the display by then, and `blitFramebuffer` refuses to copy between a floating-point read buffer and the fixed-point canvas (ES 3.0 §4.3.2). That refusal raises no error the user can see — it presents as a blank canvas.
 
 **RapidRAW does not solve this on Linux, and its non-solution is worth knowing.** It disables its wgpu renderer on Linux outright, reads back every frame to the CPU, mozjpeg-encodes it at quality 65–85 and ships the bytes over IPC. That is the far end of the trade from "zero per-frame IPC", and it is 8-bit and lossy. Independent confirmation that the surface-contention problem is real, and that there is no free path hiding in a fork.
 
@@ -826,16 +833,24 @@ photodesk/
 │   │                             committed, staleness caught by a test (§0 register)
 │   ├── graph/                  ← executes the compiled plan (no UI). The *compile*
 │   │                             is in Rust — see §6.2, and the §0 register
-│   ├── panels/                 ← Crop Light Color Detail Effects Masks AI
+│   ├── panels/                 ← Crop Light Color Detail Effects Masks AI. v0.1 is Light;
+│   │                             the rest are drawn, disabled, and say which version
 │   ├── canvas/                 ← viewport, preview renderer, before/after
-│   └── design/                 ← tokens, type scale
-├── src-tauri/src/              ← a library first, an application later. No `tauri`
-│   │                             dependency until there is a window to open, so §12.3
+│   ├── design/                 ← tokens, type scale
+│   └── ipc.ts                  ← the Rust boundary, in one file and deliberately short
+├── app/                        ← the window. `tauri`, `main.rs`, the IPC commands and
+│   │                             nothing else — a separate crate so that `photodesk`
+│   │                             stays linkable without webkit (§0 register)
+│   ├── src/main.rs             ← what crosses the boundary, and what deliberately does not
+│   ├── capabilities/           ← what the one window may ask the core for
+│   └── tauri.conf.json
+├── src-tauri/src/              ← the library. **No `tauri` dependency, ever**, so §12.3
 │   │                             and §12.1 can run headless on every commit
 │   ├── engine/                 ← our render core: decode, colour, GPU dispatch, shaders
 │   │   ├── colour.rs           ← spaces, transfer curves, matrices — all derived
 │   │   ├── icc.rs              ← reading an embedded profile; §4's two spaces or an error
 │   │   ├── decode.rs           ← §5 stage 0: a file becomes linear P3 f16
+│   ├── glsl.rs             ← §7.2's preview half: WGSL → GLSL ES 3.00, at startup
 │   │   ├── gamut.rs            ← §16 #11's export policy
 │   │   ├── image.rs            ← the working buffer, and §7.1's proxy resample
 │   │   ├── render.rs           ← executes a compiled graph through wgpu (§7.2)
@@ -928,12 +943,12 @@ The second is the one that matches §9.4's existing posture — a missing capabi
 | 19 | HEIF **output**, and with it EXIF for HEIF sources. §6.1's formats are JPEG, PNG and TIFF; a HEIC in, HEIC out round trip is not among them, and the metadata policy reads EXIF from JPEG only | Whenever a HEIF export is actually wanted; §4's default output is sRGB JPEG for a reason |
 | ~~17~~ | ~~PNG, and therefore screenshots~~ | **Closed 2026-09-06 — decoded. §4, `engine/decode.rs`, `tests/decode.rs`** |
 | 14 | Golden-image thresholds for HEIC sources, which must clear the ~0.9 ΔE YCbCr floor (§3) | Before the first `--bless` (§12.1) |
-| 16 | Parameter ranges — the document validates finiteness but no bounds, so a `exposure: 400` is a legal document. §11 puts slider travel in the UI; whether the *file* has an opinion is unstated | Before v0.2's presets (§6.1), which is the first thing that writes params the UI did not |
+| 16 | Parameter ranges — the document validates finiteness but no bounds, so a `exposure: 400` is a legal document. §11 puts slider travel in the UI; whether the *file* has an opinion is unstated. **The UI half now exists**: `src/panels/light.ts` carries the travel for all six of v0.1's controls, and it is travel rather than validation — a document may legally carry `exposure: 400` and this build renders it, it simply cannot be dragged there | Before v0.2's presets (§6.1), which is the first thing that writes params the UI did not |
 | 15 | Golden-image thresholds must also allow one colour-attachment step: an RGBA16F attachment can truncate toward zero rather than round (§0 register), which is a full-step bias on every stored channel and not the shader's doing | Before the first `--bless` (§12.1); same conversation as #14 |
 | 4 | Pipeline v1 ordering, **and the formulations inside it** — the six sliders v0.1 ships each have a stated shape (`shaders/photodesk/adjust.wgsl`) and several are choices rather than facts: contrast is a gain about 18% grey in linear light, stages 4's three controls are weighted on *perceptual* rather than linear luminance, vibrance measures existing chroma relative to brightness | Golden-image validation |
 | 5 | Pre-1.0 vs post-1.0 reorder policy | Before v0.2 (§5) |
 | 6 | Remote AI endpoint: self-hosted ComfyUI or gateway | Before v0.5 |
-| 7 | Icon — `PD` monogram or geometric mark, monochrome, no aperture | Whenever; the 16×16 render is the only test |
+| 7 | Icon — `PD` monogram or geometric mark, monochrome, no aperture. `app/icons/icon.png` is a **placeholder** that commits to neither, present because `tauri-build` requires a file | Whenever; the 16×16 render is the only test |
 | ~~8~~ | ~~Front-end framework~~ | **Closed 2026-09-06 — none. TypeScript + Vite, zero runtime dependencies (§10.3)** |
 | 9 | HDR gain map handling beyond v1's discard | An HDR display, or the first wanted gain-mapped export (§4) |
 | 10 | Layer count at which frame rate is allowed to fall | Measured against the §7.3 bound of 6 |

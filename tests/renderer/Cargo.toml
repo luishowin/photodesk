@@ -9,14 +9,20 @@ license.workspace = true
 
 [dependencies]
 naga.workspace = true
+# The harness points at the product rather than keeping copies. Stage 13's gamut policy
+# is implemented in the render core (§16 #11), both shipped shaders are read from
+# `shaders/photodesk/`, and since the preview lowers them at startup the *lowering* is
+# product code too — so `lib.rs` delegates to `engine::glsl` rather than owning a second
+# one. `encode_stage.rs` checks the shader against the shipped code rather than against
+# a second transcription of the same maths, which is the mistake the colour harness's
+# own "one workload definition, not two" rule exists to prevent.
+photodesk = { path = "../../src-tauri" }
 
 [dev-dependencies]
 wgpu.workspace = true
+# The plan the front end executes crosses as JSON, so the harness writes the same shape
+# the IPC boundary does rather than a second description of it.
+serde_json.workspace = true
 half.workspace = true
 pollster.workspace = true
 bytemuck.workspace = true
-# Stage 13's gamut policy is implemented in the render core (§16 #11).
-# `encode_stage.rs` checks the shader against the shipped code rather than against a
-# second transcription of the same maths, which is the mistake the colour harness's
-# own "one workload definition, not two" rule exists to prevent.
-photodesk = { path = "../../src-tauri" }

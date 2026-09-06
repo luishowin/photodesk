@@ -13,6 +13,7 @@ pub mod decode;
 pub mod exif;
 pub mod export;
 pub mod gamut;
+pub mod glsl;
 pub mod icc;
 pub mod image;
 pub mod render;

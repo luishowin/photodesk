@@ -1,0 +1,17 @@
+{
+  "name": "photodesk",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "check": "tsc --noEmit",
+    "build:harness": "vite build --config vite.harness.config.ts"
+  },
+  "//": "\u00a710.3 froze zero runtime dependencies, and this is what that means in practice: `dependencies` is absent, not empty. Vite and TypeScript are build tooling and leave nothing in the bundle. Tauri's own JS API is reached through `withGlobalTauri` rather than @tauri-apps/api for the same reason \u2014 it would be the one runtime package, for a wrapper around a function the webview already has.",
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "vite": "^7.1.0"
+  }
+}

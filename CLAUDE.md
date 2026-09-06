@@ -17,7 +17,7 @@ Don't edit past DECISIONS entries.
 
 ## Current state
 
-**Spec v0.19. Phase 0 complete, v0.1 in progress.** 131 tests, everything on `main` and pushed. (`cargo test` prints two `failed to parse serde attribute` warnings from ts-rs; both are benign — the `ts(type = "string")` override already emits what they would have, and `deny_unknown_fields` has no TypeScript meaning.)
+**Spec v0.20. Phase 0 complete; v0.1 runs.** 134 tests, everything on `main` and pushed. (`cargo test` prints two `failed to parse serde attribute` warnings from ts-rs; both are benign — the `ts(type = "string")` override already emits what they would have, and `deny_unknown_fields` has no TypeScript meaning.)
 
 Phase 0's three spikes ran on 2026-09-05 and two of the three answers were not the expected ones — Spike A's gate **failed** (no fork), B and C are green. Their reports are `docs/{FORK-AUDIT,SPIKE-B,SPIKE-C}.md`. Read `FORK-AUDIT.md` before revisiting anything about the render path.
 
@@ -30,33 +30,55 @@ v0.1's headless half is built. What remains is the part a person touches.
 | Decode (§5 stage 0) | done — HEIF + JPEG + PNG → linear P3 f16, ICC classified |
 | Render (§7.2) | done — a compiled graph through wgpu, six sliders |
 | Export (§6.1's `output`) | done — JPEG + PNG, ICC-tagged, metadata policy |
-| **Front end** | **not started** — this is what's next |
+| **Front end** | **done** — Tauri window, WebGL2 preview, §11's six sliders, before/after, export |
 | Crop / masks / curves | v0.2–v0.4, refused by name where reachable |
 
-**§12.2 and §12.3 both run.** Source preservation has all five of its steps for the first time; proxy/full-res agreement is measured and its bar is a *precondition* rather than a number (see below).
+**§12.2 and §12.3 both run, and §12.2 now runs across the boundary it was written for.** Source preservation has all five of its steps; proxy/full-res agreement is measured with a *precondition* rather than a number (see below); and the front end's own modules, in Tauri's own webview, render the product's shaders **identically to wgpu — max 0 of 255 over 12,288 channels**.
+
+```
+cargo test -p photodesk-renderer-spike        # emits the inputs and the reference
+npm run build:harness                         # bundles src/graph + src/canvas for the page
+python3 tests/renderer/web/run-probe.py --engine webkit2gtk-4.1 --plan
+```
+
+That is three commands rather than one because the browser half cannot run in `cargo test`. Run it after touching a shader, `src/graph/`, or `src/canvas/`.
+
+### Running it
+
+```
+npm install && npm run build          # the front end; dist/ is what the window loads
+cargo run -p photodesk-app [path]     # a path opens straight into the editor
+```
+
+The four devel packages are installed. `npm run dev` alone does **not** work and says so: without the Rust core there is nothing to decode a photograph, and `ipc.ts` fails with that sentence rather than a `TypeError`.
 
 ### What's next
 
-**The front end.** Everything above is headless. §14's v0.1 is a photograph a person can open, drag six sliders on, compare against the original, and export — which means Tauri, the WebGL2 preview executing a compiled plan, and §11's slider contract hand-written (§10.3 froze: no framework, TypeScript + Vite, zero runtime dependencies).
+**v0.2 — crop, rotate, straighten; presets; undo/redo at gesture granularity.** Undo already commits per gesture (`src/document/history.ts`); what v0.2 adds is the panel and the geometry node, which `src/graph/execute.ts` currently refuses **by name**.
 
-Tauri needs four devel packages this machine does not have, and installing them needs sudo:
+Open and worth doing before it:
 
-```
-sudo dnf install webkit2gtk4.1-devel gtk3-devel librsvg2-devel openssl-devel
-```
-
-**§16 #17 (PNG) is closed** — decode reads PNG, §1's screenshot is a subject the app can open, and export's `iCCP` finally has a reader. #18 (tiled export) and #19 (HEIF output) can wait; nothing else is open before v0.1 but the front end.
+- **The six sliders have never been dragged over a real photograph by a person.** Everything is measured, and measurement is not the same as use — §11's feel (0.1× travel on `Shift`, where the numeric entry lands, whether the split handle wants to be sticky) is a thing to sit with rather than assert.
+- **§16 #7's icon** is a placeholder, marked as one.
+- **§16 #16** — the register's UI half now exists in `src/panels/light.ts`; whether the *file* has an opinion about ranges is still open, due before v0.2's presets.
+- #18 (tiled export) and #19 (HEIF output) still wait.
 
 ## Where the code is
 
 ```
-src-tauri/                  the Rust core. A library — no `tauri` dependency yet, and
-│                           that is deliberate: §12.1 and §12.3 must run headless, which
-│                           is criterion 1 of the gate Spike A failed RapidRAW on
+app/                        the window. `tauri`, the IPC commands, and no logic a test
+│                           would want. A separate crate so `photodesk` stays linkable
+└── src/main.rs             without webkit — a feature flag would have left
+                            `--all-features` able to break that quietly
+
+src-tauri/                  the Rust core. A library — **no `tauri` dependency, ever**:
+│                           §12.1 and §12.3 must run headless, which is criterion 1 of
+│                           the gate Spike A failed RapidRAW on
 ├── engine/                 the render core (§13)
 │   ├── colour.rs           spaces, curves, matrices — all derived from chromaticities
 │   ├── icc.rs              read and write a profile; §4's two spaces or a named error
 │   ├── decode.rs           §5 stage 0: a file becomes linear P3 f16
+│   ├── glsl.rs             §7.2's preview half: WGSL → GLSL ES 3.00, at startup
 │   ├── image.rs            the working buffer, §7.1's proxy, EXIF orientation
 │   ├── gamut.rs            §16 #11's export policy
 │   ├── render.rs           executes a compiled graph through wgpu
@@ -69,7 +91,13 @@ src-tauri/                  the Rust core. A library — no `tauri` dependency y
 
 shaders/photodesk/          the only shader source (§13). adjust.wgsl is §5 stages 2–9
                             fused; encode.wgsl is stage 13 with the gamut policy
-src/document/generated/     TypeScript types, emitted from the Rust schema, committed
+src/                        the front end (§10.3: no framework, TypeScript + Vite,
+├── ipc.ts                  zero runtime dependencies — `dependencies` is absent
+├── canvas/                 the viewport: WebGL2, fit, before/after, the blit
+├── graph/execute.ts        executes the compiled plan. It does not build one
+├── panels/                 §11's slider, and the Light tab's six controls
+├── design/tokens.css       §10.1's table, verbatim
+└── document/generated/     TypeScript types, emitted from the Rust schema, committed
 tests/color/                Spike B's harness, kept permanent. Tests the product now
 tests/renderer/             Spike C's harness, kept permanent
 ```
@@ -91,6 +119,8 @@ This is the project's recurring shape, and it has now decided five things:
 - **Never author a compute shader, a storage buffer or a storage texture.** Frozen. naga refuses all three by name targeting GLSL ES 3.00, so one of them anywhere breaks the preview path for the whole project. `@fragment`, `var<uniform>`, sampled textures, `@location(0)` returns.
 - **There is no CPU renderer and there must not be one.** The obvious way to test a GPU renderer is to write the same maths in Rust and compare — precisely the drift §0 freezes against. The shaders are the only description of what a pixel goes through. The two constants hardcoded in `adjust.wgsl` (linear P3's luma weights and XYZ matrix) are the exception, and a test reads them out of the shader text and compares them against the derived values.
 - **`src/document/generated/{document,graph}.ts` are generated and committed.** Don't hand-edit them, and don't hand-write a second TypeScript description of either. `cargo test -p photodesk` regenerates and fails if they changed: change the Rust, run the tests once, commit both.
+- **The preview's GLSL is lowered at startup, never generated to disk.** `engine::glsl` runs in a few milliseconds and there is nothing to keep in sync; a committed `.frag` is a preview rendering a different shader from the export after one forgotten build step. `tests/renderer/` calls the same function rather than keeping a copy, so its "compute is refused" negative control is about the code that ships.
+- **The front end finds uniform offsets by name, from the linked program.** naga owns the GLSL names (`_group_0_binding_0_fs.exposure` today); a table in TypeScript goes stale as one slider that silently does nothing.
 - **There is one conversion path from a decoded buffer to the working space.** `to_working_space` takes a described `Surface` — stride, channels, depth — rather than a pointer, because three decoders hand back three shapes. Container features are flattened *before* it (palette, sub-byte depth, `tRNS` and Adam7 by the `png` crate; grey and 16-bit inside the one function), never as a branch in §4's chain. The JPEG path used to expand greyscale itself; that was a second place deciding what grey means, and it is gone.
 - **The graph is compiled once, in Rust.** `src/graph/` in the front end is the plan's *executor*. Two compilers would render two topologies and drift the way two shader sources would.
 - **Don't add lcms2 to the product.** It is a dev-dependency of `tests/color/` and belongs there: the harness needs to be able to *disagree* with the shipped ICC parser, which it cannot if both call the same library. Same shape as the derived-not-tabulated matrices rule.
@@ -111,6 +141,9 @@ This is the project's recurring shape, and it has now decided five things:
 - **EXIF orientation is applied to the pixels, never carried forward.** It is structure, not description: a sideways file whose tag says "rotate me" reads correctly only to software honouring the tag, so `metadata: strip` would rotate the photograph. libheif applies the container transform itself; the JPEG path does it explicitly.
 - **The photographs are gone from `~/Downloads`.** `real_photos.rs`, `gamut_policy.rs` and `decode_path.rs`'s real-file cases all skip. They are personal files and were never in the repo; put one back or set `PHOTODESK_CORPUS_DIR`. The ΔL\*/ΔC\*/ΔH decomposition on real pixels is the one number `DECISIONS.md` still owes.
 - **`tests/renderer/web/generated/` is gitignored and regenerable.** `cargo test -p photodesk-renderer-spike` emits it. The browser harness loads the *generated* GLSL rather than a twin, deliberately.
+- **Every WebGL pass inverts the image, and wgpu's passes do not.** The shaders are authored for wgpu's top-left framebuffer origin; GL's is bottom-left, so the same `uv` addresses the opposite end. `preview.ts` resolves the parity at the blit. The relationship is not the obvious one: a *direct* readback means the top row is at `v = 0`, and the canvas's `y = 0` is its **bottom**, so presenting it upright needs a *flipped* blit. Getting that backwards was the first thing that happened.
+- **`blitFramebuffer` refuses to copy float → fixed-point** (ES 3.0 §4.3.2), so the plan's output node draws into an 8-bit target — which is right anyway, stage 13 having encoded for the display by then. It raises nothing the user can see: the symptom is a blank canvas.
+- **A WebKit `get_snapshot` will not capture a WebGL canvas unless something forced a composite immediately before.** Two "blank canvas" investigations were this and not a bug. The agreement harness is the instrument; a screenshot is not.
 - **`png` swallows an `iCCP` chunk it cannot inflate** and then reports no profile, so a damaged colour claim arrives identical in shape to a file that never made one. §4 says those are different, so `decode.rs` walks the chunk headers itself to tell them apart. Don't replace that with `info.icc_profile.is_none()`.
 - **A 4-bit PNG palette packs two pixels to a byte, high nibble first.** A 1×1 fixture holding `0x10` selects index 1 while looking like it selects index 0 — which is how the first version of that test passed while asserting nothing.
 - **`libheif-rs` is pinned to 2.7, not 3.x.** 3.x needs libheif ≥ 1.23 and Fedora ships 1.21.2. Load-bearing — the binding tracks upstream closely and Fedora will lag it.
