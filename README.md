@@ -10,17 +10,17 @@ The test for any feature: **does it shorten the path between opening a photo and
 
 ---
 
-## Status — v0.0, Phase 0 complete
+## Status — Phase 0 complete, v0.1 started
 
-There is no application yet, and that is on purpose. The architecture spec commits to three spikes before any product code, on the argument that discovering their answers in month four is far more expensive than spending three weeks on them now. **All three have now run.**
+There is no application yet. The architecture spec committed to three spikes before any product code, on the argument that discovering their answers in month four is far more expensive than spending three weeks on them now — **all three have run**, and the first of v0.1's parts is in the tree.
 
 | Phase | State |
 |---|---|
-| Spec | v0.13 — [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Spec | v0.14 — [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Spike A — RapidRAW fork audit | **complete — gate failed, no fork.** [`docs/FORK-AUDIT.md`](docs/FORK-AUDIT.md) |
 | Spike B — colour validation harness | **complete — green, working space frozen.** [`docs/SPIKE-B.md`](docs/SPIKE-B.md) |
 | Spike C — preview renderer | **complete — green, preview path frozen.** [`docs/SPIKE-C.md`](docs/SPIKE-C.md) |
-| v0.1 | **unblocked, with nothing outstanding in front of it** |
+| v0.1 | **started** — document model done; graph compile, decode, sliders and export to come |
 
 **Spike A failed its gate on 2026-09-05, which is the outcome it was run to find.** RapidRAW's per-pixel chain is one compute kernel in which stage order is the literal statement order, and vendored shaders are read-only — so "pipeline order is explicit and versioned", a frozen item, could not be implemented inside the fork. Three further findings said the fork would not have supplied much of what it was wanted for: RapidRAW has **no colour management at all**, **cannot open HEIF**, and on Linux ships every preview frame as a lossy JPEG over IPC. PhotoDesk builds against `rawler` + `libheif` + its own shaders instead.
 
@@ -31,6 +31,10 @@ There is no application yet, and that is on purpose. The architecture spec commi
 **And the export now has a policy, which §4 never gave it.** A Display P3 photograph exported to sRGB produces channels the smaller gamut cannot hold, and something has to decide what happens to them; until 2026-09-06 that something was one `clamp` in a test harness, worth up to **ΔE 2.86 on real photographs**. The measurement that settled it had to be built around a trap: clamping each channel to [0,1] *is* the Euclidean projection onto the gamut cube, so the clip is the nearest in-gamut colour — in linear RGB, a space nobody perceives in — and every distance-minimising policy puts all 81 of 81 out-of-gamut samples on the gamut surface, which is exactly how a gradient becomes a flat patch. **The lowest ΔE and the flattest gradient are the same answer**, so ΔE cannot rank these and the harness ranks them on what the error is made of instead. Frozen: **clip chroma at constant luminance**, which holds L\* exact by construction and halves the adjacent pixel pairs a real photograph merges into one colour, at zero cost inside the gamut.
 
 **The preview path is confirmed in the webview Tauri actually embeds.** Spike C ran in Epiphany, which is webkitgtk-6.0; Tauri v2 binds webkit2gtk-4.1, and the report left that gap to the first v0.1 build. Driving the 4.1 WebView directly closed it a day later: identical capabilities, an identically compiled shader, and pixel agreement **identical to every digit**.
+
+**v0.1's first piece is the document model** ([`src-tauri/src/photodesk/`](src-tauri/src/photodesk)), which §14 puts before the sliders on the argument that the boring parts are the ones impossible to bolt on later. §6.3's migration table is six conditions with six different behaviours and three of them are not accept-or-reject, so it lives in the types: loading returns a `Loaded` whose document is not a public field, and since the only door to an owned one is `into_writable()`, **read-only is enforced by the compiler** rather than by everyone's care. The schema is defined once in Rust and the TypeScript types are *generated* from it, for the same reason the browser harness loads generated GLSL rather than a hand-written twin.
+
+Writing it found a bug in the specification, in the one workflow §14 gives v0.1. §6.1 named the sidecar `IMG_4821.photodesk.json` — extension dropped. But v0.1 is "open a HEIF → … → export", so the export lands as `IMG_4821.jpg` beside `IMG_4821.HEIC`, and under that naming the two photographs share one sidecar: editing the export silently overwrites the original's edits. The sidecar now keeps the whole filename.
 
 See [`docs/DECISIONS.md`](docs/DECISIONS.md) for what has been decided and why, and [`docs/REVIEW-2026-09-05.md`](docs/REVIEW-2026-09-05.md) for what is still open.
 
@@ -117,10 +121,11 @@ v0.1 deliberately excludes curves and HSL. They're the fun part, which is exactl
 
 ## Running what exists
 
-There is no application to run. There are two harnesses, and both are permanent suites rather than scaffolding — [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §13 keeps them because every later golden-image test sits on top of what they check.
+There is no application to run — `src-tauri/` is a library and links no webview yet, deliberately, so that §12.3's source-preservation test and §12.1's golden images can run headless on every commit. The two Phase 0 harnesses are permanent suites rather than scaffolding: §13 keeps them because every later golden-image test sits on top of what they check.
 
 ```sh
 cargo test --workspace                                   # everything, ~2 s
+cargo test -p photodesk -- --nocapture                   # the document model
 cargo test -p photodesk-color -- --nocapture             # the colour numbers
 cargo test -p photodesk-renderer-spike -- --nocapture    # transpilation and agreement
 ```
@@ -133,6 +138,8 @@ The browser half of Spike C needs the generated GLSL, which `cargo test -p photo
 python3 tests/renderer/web/run-probe.py                          # webkitgtk-6.0, via Epiphany
 python3 tests/renderer/web/run-probe.py --engine webkit2gtk-4.1  # what Tauri v2 embeds
 ```
+
+`cargo test -p photodesk` also regenerates `src/document/generated/document.ts` and fails if it moved, so a schema change is: edit the Rust, run the tests once, commit both.
 
 Tests that need a real photograph read `PHOTODESK_CORPUS_DIR` (default `~/Downloads`) and skip with an explanation when it holds none. The photographs are personal files and are not in this repository.
 
