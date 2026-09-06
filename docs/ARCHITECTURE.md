@@ -1,6 +1,6 @@
 # PhotoDesk — Architecture Specification
 
-**Version:** 0.14
+**Version:** 0.15
 **Author:** Luis Howin
 **Platform:** Fedora Workstation / GNOME
 **Status:** Master spec for the coding agent. **Phase 0 complete.**
@@ -50,6 +50,7 @@ This table is the contract. Anything not listed is undecided and needs a decisio
 | **Export gamut mapping = clip chroma at constant luminance** | **FROZEN** | Measured (§4, `tests/color/tests/gamut_policy.rs`). The clip's error has no policy — how much lightness a colour loses depends on which channel ran out first, up to 2.8 L\*. This one's error is *stated*: L\* is exact by construction, chroma is what gets spent. On a real photograph it halves the adjacent pixel pairs that merge into one colour, for zero cost inside the gamut and the same handful of ALU ops. |
 | **Stage 13 runs the gamut map in the fragment shader** | **FROZEN** | Corollary of "one shader source, preview and export": the preview gamut-maps every frame to the display, so a policy that needs a per-pixel search is not adoptable whatever its colorimetry. Checked, not assumed — `shaders/encode.wgsl` lowers to GLSL ES 3.00 and agrees with the Rust reference to one colour-attachment step (`tests/renderer/tests/encode_stage.rs`). |
 | **The document schema's home is Rust; the TypeScript types are generated from it** | **FROZEN** | §12.3's source preservation and §12.1's golden images have to run headless on every commit — which is criterion 1 of the gate Spike A failed RapidRAW on, and a schema reachable only through the webview fails it the same way. A hand-written TypeScript twin would make "one schema" untestable exactly as a hand-written GLSL twin would have made "one shader source" untestable, so the front end reads generated declarations (`src/document/generated/`, committed, staleness caught by a test). |
+| **The graph is compiled once, in Rust; both renderers execute the same plan** | **FROZEN** | Corrects §13, which puts "DAG compile" in the front end. The preview runs in the webview and the export runs through wgpu (§7.2) — two compilers would render two topologies and drift exactly as two shader sources would, with §12.2 then comparing two *compilations* rather than two executions of one plan. The one-shader-source invariant would be enforced over the shader while the graph above it went unchecked. `src/graph/` is the plan's executor. |
 | **Sidecar keeps the whole filename: `IMG_4821.HEIC.photodesk.json`** | **FROZEN** | Corrects §6.1's example, which drops the extension. §14's v0.1 is "open a HEIF → … → export", so `IMG_4821.jpg` beside `IMG_4821.HEIC` is the workflow rather than a corner case — and under §6.1's naming those two share one sidecar, so editing the export silently overwrites the original's edits. |
 | **RGBA16F colour attachments may truncate rather than round** | **FROZEN as a platform fact** | Measured on RADV/RENOIR: 48,020 of 49,152 stored channels are bit-exactly the reference *truncated toward zero*, not rounded to nearest. It is the driver's rounding mode, not the shader's arithmetic, so §12.1's thresholds have to allow one attachment step or a correct render fails the suite (§16 #15). |
 | **No front-end framework: TypeScript + Vite, zero runtime dependencies** | **FROZEN** | The canvas needs none (Spike C), and §10/§11 specify the interaction surface closely enough that a component library would be overridden rather than used. Cost accepted knowingly: panels, undo and the keymap are hand-written, and the bill arrives at v0.2–v0.7, not v0.1. |
@@ -395,6 +396,15 @@ Node = { id, op: OpKind, op_version: u32, inputs: [NodeId], params: TypedParams,
 - When the stack becomes genuinely lossy for a topology worth having, that's a `photodesk: 2` schema bump — a deliberate, migrated event, not a drift.
 
 Benefits that arrive for free: identity-node elimination, common-subexpression caching (two layers sharing a mask compute it once), dirty-subgraph invalidation on a slider drag instead of full re-render, and a stable target for future modules.
+
+**They arrive free from one mechanism, and it is worth naming.** A node's key is `H(what it does, the keys of its inputs)` — a Merkle hash, so it covers the whole subgraph beneath it. Deduplication is then a lookup on insertion rather than a pass afterwards, and the dirty set is key-set subtraction: recompiling after an edit gives identical keys for everything the edit did not reach. That generalises past the slider §6.2 asks for, at no extra cost — a reorder, an insertion and a deletion are answered by the same subtraction, where a positional dirty flag needs a case for each and gets one of them wrong.
+
+Two consequences the implementation makes structural rather than conventional:
+
+- **The key is scale-free**, because §12.2 renders one document at proxy and at full-res and compares them — a claim that only means something if both runs execute one graph. Resolution belongs to execution, and to *caching*: `Node::cache_key(w, h)` folds it in, which is §9.3's `mask_resolution` rule and its "different caches, different keys" rule at the same time.
+- **Feather and invert are their own nodes**, downstream of the mask shape. §9.3 says feather must not be in the key or every nudge of the slider re-runs the segmenter; splitting them means the shape's key *cannot* contain the radius, so the rule stops being something to remember.
+
+**Compiled once, in Rust.** §13 put "DAG compile, dirty tracking" in the front end. The preview runs in the webview and the export runs natively (§7.2), so two compilers would produce two topologies and drift the way two shader sources would — §0 froze an invariant over exactly that shape. The graph is compiled here, serialised, and executed by both; `src/graph/` is the executor.
 
 ### 6.3 Migration
 
@@ -746,7 +756,8 @@ photodesk/
 │   ├── document/               ← editing model, history, presets
 │   │   └── generated/          ← the schema's TypeScript types. Emitted from Rust,
 │   │                             committed, staleness caught by a test (§0 register)
-│   ├── graph/                  ← DAG compile, dirty tracking (no UI)
+│   ├── graph/                  ← executes the compiled plan (no UI). The *compile*
+│   │                             is in Rust — see §6.2, and the §0 register
 │   ├── panels/                 ← Crop Light Color Detail Effects Masks AI
 │   ├── canvas/                 ← viewport, preview renderer, before/after
 │   └── design/                 ← tokens, type scale
@@ -756,6 +767,7 @@ photodesk/
 │   ├── engine/                 ← our render core: decode, colour, GPU dispatch, shaders
 │   ├── photodesk/              ← document → engine bridge, IO, cache, export
 │   │   ├── document/           ← the schema: model, validation, migration
+│   │   ├── graph/              ← §6.2's DAG compile and dirty tracking
 │   │   └── sidecar.rs          ← where it sits on disk, and how it is written
 │   └── ai/                     ← provider registry, routing
 ├── shaders/photodesk/          ← WGSL source of truth. The only shader source (Spike A gate failed)

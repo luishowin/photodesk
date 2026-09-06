@@ -50,37 +50,58 @@ mod bindings {
     /// Where the front end will import from (§13's `src/document/`).
     const OUT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/document/generated");
 
+    /// Every generated file, checked. A guard that covers one of two is a guard that
+    /// lets the other rot, which is the failure it exists to prevent.
+    const FILES: [&str; 2] = ["document.ts", "graph.ts"];
+
     #[test]
     fn typescript_bindings_are_current() {
-        let path = std::path::Path::new(OUT_DIR).join("document.ts");
-        let before = std::fs::read_to_string(&path).unwrap_or_default();
+        let dir = std::path::Path::new(OUT_DIR);
+        let before: Vec<String> = FILES
+            .iter()
+            .map(|f| std::fs::read_to_string(dir.join(f)).unwrap_or_default())
+            .collect();
 
         let cfg = Config::default().with_out_dir(OUT_DIR);
         Document::export_all(&cfg).expect("export TypeScript bindings");
+        // The compiled graph goes over the same wire, for the same reason: it is
+        // compiled once here and executed by both renderers, so the front end needs
+        // its shape and must not describe it a second time.
+        crate::photodesk::graph::Graph::export_all(&cfg).expect("export graph bindings");
 
-        let after = std::fs::read_to_string(&path).expect("bindings were not written");
-        println!("bindings: {} ({} bytes)", path.display(), after.len());
+        let after: Vec<String> = FILES
+            .iter()
+            .map(|f| std::fs::read_to_string(dir.join(f)).expect("bindings were not written"))
+            .collect();
 
         // Named types, not `any`. The point of generating them is that the front end
         // gets the schema rather than a shrug.
+        let all = after.join("\n");
         for expected in [
             "export type Document",
             "export type Layer",
             "export type AdjustV1",
             r#"export type ColorSpace = "srgb" | "display-p3""#,
+            "export type Graph",
+            "export type NodeKind",
+            "export type NodeKey = string",
         ] {
             assert!(
-                after.contains(expected),
+                all.contains(expected),
                 "the generated bindings have no `{expected}` in them"
             );
         }
-        assert_eq!(
-            before,
-            after,
-            "\nthe generated TypeScript no longer matches the Rust schema.\n\
-             The new file has just been written to {}, so the fix is done — commit it \
-             alongside the schema change that caused it.\n",
-            path.display()
-        );
+
+        for ((name, before), after) in FILES.iter().zip(&before).zip(&after) {
+            println!("bindings: {name} ({} bytes)", after.len());
+            assert_eq!(
+                before,
+                after,
+                "\nthe generated `{name}` no longer matches the Rust schema.\n\
+                 The new file has just been written to {}, so the fix is done — commit \
+                 it alongside the schema change that caused it.\n",
+                dir.join(name).display()
+            );
+        }
     }
 }

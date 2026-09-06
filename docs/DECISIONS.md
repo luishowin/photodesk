@@ -536,3 +536,54 @@ Sidecar writes are atomic — temp file beside the target, then rename — becau
 ### Opened
 
 **§16 #16 — parameter ranges.** The document validates finiteness and no bounds, so `exposure: 400` is a legal document. Deliberate: §6.1 states no ranges and §11 puts slider travel in the UI, so inventing numbers here would put them in the register's blind spot. Due before v0.2's presets, which are the first thing that writes params the UI did not.
+
+---
+
+## 2026-09-06 — §6.2's graph compile; spec v0.14 → v0.15
+
+`src-tauri/src/photodesk/graph/`, 18 tests. The document is stack-shaped on disk and the UI is always a stack; internally it now compiles to the typed DAG §6.2 describes.
+
+### The decision it forced
+
+**The graph is compiled once, in Rust, and both renderers execute the same plan. FROZEN.**
+
+§13 puts "DAG compile, dirty tracking" in `src/graph/`, the TypeScript front end. That cannot be right, and the reason is one §0 has already frozen a whole invariant over. The preview runs in the webview and the export runs natively through wgpu (§7.2). **If each compiled its own graph, the preview would render one topology and the export another** — and they would drift exactly as two shader sources would, with the same property that nobody notices until an exported file differs from what was on screen. §12.2 would then be comparing two *compilations* rather than two executions of one plan, and the one-shader-source invariant it exists to enforce would be enforced over a shader while the graph above it went unchecked.
+
+So the compile is here, the plan is serialised, and `src/graph/` executes it. The TypeScript types are generated from the same declarations as the document's. §13 is corrected; this is the third time the "one artefact, generated, not two hand-written ones" argument has decided something in this project, and it has not been wrong yet.
+
+### One mechanism, four benefits
+
+§6.2 lists identity-node elimination, common-subexpression caching, dirty-subgraph invalidation and a stable target as benefits that arrive *for free*. Free is a claim about a design, so it is worth saying what actually delivers it: **a node's key is `H(what it does, the keys of its inputs)`**. A Merkle hash, so it covers the whole subgraph beneath it.
+
+- **Deduplication is a lookup on insertion**, not a pass afterwards — there is never a moment when the duplicate exists.
+- **The dirty set is key-set subtraction.** Recompiling after an edit gives identical keys for everything the edit did not reach.
+
+That last one generalises further than §6.2 asks, at no extra cost. §6.2 wants invalidation "on a slider drag"; the same subtraction answers a **reorder**, an **insertion** and a **deletion** with no additional machinery. The tests cover all four, and the deletion case is the one worth reading: removing the last of three layers dirties **exactly one node**, the encode, because it now consumes a different image while both surviving adjustments keep their keys. A positional dirty flag would have invalidated everything after the deletion.
+
+### Two rules from elsewhere, made structural
+
+**§9.3's feather rule.** *"Feather is deliberately not in the key… putting it in `input_state_hash` would make every nudge of the feather slider invalidate the embedding and re-run the segmenter, turning a free control into a multi-second one."* Feather and invert are compiled as their own nodes downstream of the mask shape, so the shape's key **cannot** contain the radius — the mistake is not expressible rather than merely discouraged. Two layers with the same AI mask at different feathers share the segmentation and differ only in the blur; the test asserts one `mask_shape` and two `mask_feather`.
+
+**§9.3's resolution rule, and §12.2's premise.** The node key is deliberately scale-free, because §12.2 renders one document at proxy and at full-res and asserts they match — which only means something if both runs execute one graph. Resolution belongs to execution, and to caching: `cache_key(w, h)` folds it in, which is §9.3's `mask_resolution` and its "different caches, different keys, don't share one scheme" at once. Without it, "a proxy-resolution mask silently serving a full-resolution export" is a one-line bug.
+
+### The control
+
+Deduplication that shared *too much* would look like an even better result, so the test that matters is the one that must not share.
+
+§8's frozen register item says `luminance` and `color` read **the layer's input**. Two layers with an identical luminance range at different stack positions therefore select different pixels — the second sees the first layer's adjustment already applied. Sharing one node between them would be a real bug producing a plausible image, which is precisely why §8 wrote the rule down: unnamed, "it gets chosen accidentally and differently in the preview and the export".
+
+The compiler makes it structural. A component that reads pixels takes the layer's input as a graph input and is keyed by everything upstream; one that does not takes no input at all. So the same two layers sharing a *linear gradient* compile to one node and sharing a *luminance range* compile to two, and the test asserts both halves — the second is what makes the first a consequence rather than a coincidence.
+
+### What is eliminated, and what deliberately is not
+
+Disabled layers, identity layers, identity geometry, and single-component masks (folding one value is that value). And §5's own sentence, which earns its own test: *"a `mask: null` layer composites at full coverage, so its mask multiply and composite are identity and both are skipped"*. Getting that wrong is invisible in the output and expensive in the budget — a composite is a full-frame texture round-trip, and §7.3 sizes the frame budget on four or five passes per layer rather than six.
+
+**Nothing is reordered, merged across layers, or algebraically simplified.** §5 freezes that pipeline order is explicit and versioned, so an optimiser deciding two adjacent adjustments could be one pass would be changing an order no document records. Elimination removes what does nothing; it never rewrites what does something.
+
+And compiling a document written under an older `pipeline_version` is an **error**, not a best effort. §6.3 says open and warn, never silently re-render — compiling under this build's ordering would be that re-render, and it would be invisible: the image would simply look different from the last time the user saw it, with nothing to point at.
+
+### A serde trap worth recording
+
+`NodeKind::MaskCompose(MaskOp)` — an internally-tagged newtype variant holding a *string* — compiles, generates plausible TypeScript, and **fails at run time** the first time a two-component mask is keyed, because serde cannot serialise that shape. It is now a struct variant. The key builder hashes `serde_json::to_vec(kind)` rather than a hand-written encoder, deliberately, so that a field added to a node kind is covered by the key automatically; the cost of that choice is that a serialisation failure becomes a panic, and this is the shape that produces one.
+
+The binding-staleness test now covers **both** generated files. It covered one, which is a guard that lets the other rot — the failure it exists to prevent.
