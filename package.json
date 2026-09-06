@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "//dev": "Serves the page alone, for looking at chrome and layout. It cannot reach the Rust core, so no photograph will open and ipc.ts says exactly that. Running the application is `npm run build && cargo run -p photodesk-app`.",
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit",
     "build:harness": "vite build --config vite.harness.config.ts"

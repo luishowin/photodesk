@@ -146,7 +146,11 @@ npm install && npm run build          # the front end; dist/ is what the window 
 cargo run -p photodesk-app [path]     # a path opens straight into the editor
 ```
 
-Building the window needs four devel packages: `webkit2gtk4.1-devel`, `gtk3-devel`, `librsvg2-devel`, `openssl-devel`. `npm run dev` on its own does not work and says so — without the Rust core there is nothing to decode a photograph.
+Building the window needs four devel packages: `webkit2gtk4.1-devel`, `gtk3-devel`, `librsvg2-devel`, `openssl-devel`.
+
+`npm run build` is not optional, and there is deliberately **no dev-server mode**: `tauri.conf.json` carries no `devUrl`, because with one a debug build loads `http://localhost:1420` while a release build loads `dist/` — two ways to run the same application, one of which fails with "Connection refused" unless a second process happens to be running. A 21 kB bundle with no framework in it rebuilds in 200 ms, so what a dev server buys here is a mode that can be wrong.
+
+Use a release build for anything real. A 12 MP decode and proxy resample in unoptimised Rust takes seconds.
 
 `src-tauri/` is still a library that links no webview, deliberately, so that §12.3's source-preservation test and §12.1's golden images run headless on every commit. The two Phase 0 harnesses are permanent suites rather than scaffolding: §13 keeps them because every later golden-image test sits on top of what they check.
 

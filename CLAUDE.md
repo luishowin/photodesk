@@ -50,7 +50,9 @@ npm install && npm run build          # the front end; dist/ is what the window 
 cargo run -p photodesk-app [path]     # a path opens straight into the editor
 ```
 
-The four devel packages are installed. `npm run dev` alone does **not** work and says so: without the Rust core there is nothing to decode a photograph, and `ipc.ts` fails with that sentence rather than a `TypeError`.
+The four devel packages are installed. **`npm run build` is not optional and there is no dev-server mode** — `tauri.conf.json` has no `devUrl`, deliberately: with one, a debug build loads `http://localhost:1420` and a release build loads `dist/`, which is two ways to run the same application, one of them failing with "Connection refused" unless a second process happens to be running. `vite build` takes 200 ms for a 21 kB bundle, so what a dev server actually buys here is a mode that can be wrong. It cost one broken first run to find that out.
+
+`npm run dev` still serves the page for looking at chrome and layout without a photograph; `ipc.ts` says so in a sentence rather than failing with a `TypeError`.
 
 ### What's next
 

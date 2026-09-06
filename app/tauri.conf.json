@@ -5,7 +5,7 @@
   "identifier": "org.photodesk.PhotoDesk",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420"
+    "beforeBuildCommand": "npm run build"
   },
   "app": {
     "windows": [
