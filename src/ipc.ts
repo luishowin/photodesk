@@ -77,16 +77,56 @@ export const openImage = (path: string, viewport: number) =>
 /**
  * The proxy as RGBA f16 — the exact array `texImage2D` wants for `RGBA16F`.
  *
- * This is the one large thing that crosses, and it crosses once. Tauri hands raw
- * command responses back as an `ArrayBuffer`, so nothing is parsed on the way.
+ * This is the one large thing that crosses, and it crosses once.
+ *
+ * **The bytes are reinterpreted, never copied element-wise, and that distinction cost a
+ * black canvas.** A Tauri command returning `Response` arrives here as a byte array
+ * rather than as an `ArrayBuffer`, and `new Uint16Array(bytesArray)` does not
+ * reinterpret pairs of bytes as 16-bit values — it builds an array twice as long with
+ * one byte's *value* in each slot. Every f16 is then a denormal near zero, so the
+ * texture is black; and `texImage2D` accepts a buffer that is too long without
+ * complaint, so nothing anywhere raises an error. See `bytesOf`.
  */
-export const proxyPixels = async (): Promise<Uint16Array> => {
-  const raw = await invoke<ArrayBuffer | number[]>("proxy_pixels");
-  // Older webviews hand back a plain array; both shapes reach the same texture.
-  return raw instanceof ArrayBuffer ? new Uint16Array(raw) : new Uint16Array(raw);
+export const proxyPixels = async (expected: number): Promise<Uint16Array> => {
+  const bytes = bytesOf(await invoke<ArrayBuffer | ArrayBufferView | number[]>("proxy_pixels"));
+  const pixels = new Uint16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength >> 1);
+  if (pixels.length !== expected) {
+    throw new Error(
+      `the proxy arrived as ${pixels.length} samples where ${expected} were expected. ` +
+        `Too few would have been a GL error; too many is accepted silently and draws ` +
+        `a black photograph, which is why this is checked here rather than noticed later.`,
+    );
+  }
+  return pixels;
 };
 
+/**
+ * Whatever shape the webview handed back, as bytes.
+ *
+ * Three shapes are possible depending on the webview and the Tauri version — an
+ * `ArrayBuffer`, a typed-array view over one, or a plain array of byte values — and the
+ * only one that is safe to assume is none of them.
+ */
+function bytesOf(raw: ArrayBuffer | ArrayBufferView | number[]): Uint8Array {
+  if (raw instanceof ArrayBuffer) return new Uint8Array(raw);
+  if (ArrayBuffer.isView(raw)) {
+    return new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+  }
+  return Uint8Array.from(raw);
+}
+
 export const openOnStart = () => invoke<string | null>("open_on_start");
+
+/**
+ * Put a sentence on the process's stderr.
+ *
+ * A notice in the window is only visible to whoever is looking at the window, and the
+ * failures worth reading are the ones where the window is showing nothing.
+ */
+export const log = (message: string, level: "error" | "info" = "error") => {
+  if (!tauri) return Promise.resolve();
+  return tauri.core.invoke<void>("log", { message, level }).catch(() => undefined);
+};
 
 // ---------------------------------------------------------------------- the plan
 
@@ -95,9 +135,10 @@ export const compile = (document: Document) => invoke<Graph>("compile", { docume
 
 /** Stage 13's derived constants, from the code that derives them for the export. */
 export const encodeUniform = async (space: string): Promise<Float32Array> => {
-  const raw = await invoke<ArrayBuffer | number[]>("encode_uniform", { space });
-  const bytes = raw instanceof ArrayBuffer ? new Uint8Array(raw) : new Uint8Array(raw);
-  return new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+  const bytes = bytesOf(
+    await invoke<ArrayBuffer | ArrayBufferView | number[]>("encode_uniform", { space }),
+  );
+  return new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength >> 2);
 };
 
 // ------------------------------------------------------------------ the two writes

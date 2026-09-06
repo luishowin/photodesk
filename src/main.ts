@@ -63,6 +63,7 @@ let needsFrame = false;
  */
 let fps = 0;
 let lastDrawnAt = 0;
+let everDrew = 0;
 
 // -------------------------------------------------------------------- the chrome
 
@@ -96,13 +97,19 @@ tabs.className = "tabs";
 for (const tab of TABS) {
   const el = document.createElement("button");
   el.type = "button";
-  el.textContent = tab.name;
   el.className = tab.version === null ? "tab active" : "tab";
+  el.append(tab.name);
   if (tab.version !== null) {
-    // §9.4's posture, which §13 extends to anything not built yet: a missing capability
-    // greys out with a reason rather than vanishing or lying.
+    // §9.4's posture, which extends to anything not built yet: a missing capability
+    // greys out **with a reason** rather than vanishing or lying. The reason has to be
+    // on the tab, not in a tooltip — a disabled control with a hidden explanation is
+    // indistinguishable from a broken one, which is exactly how it was read.
     el.disabled = true;
-    el.title = `${tab.name} arrives in v${tab.version}.`;
+    const version = document.createElement("span");
+    version.className = "tab-version";
+    version.textContent = `v${tab.version}`;
+    el.append(version);
+    el.title = `${tab.name} arrives in v${tab.version}. This is v0.1.`;
   }
   tabs.append(el);
 }
@@ -195,6 +202,15 @@ function frame(): void {
         fps = fps === 0 ? instant : fps * 0.8 + instant * 0.2;
       }
       lastDrawnAt = now;
+      if (everDrew === 0) { everDrew = 1; invalidate(); }
+      else if (everDrew === 1) {
+        everDrew = 2;
+        void ipc.log(
+          `first frame: canvas ${canvas.width}×${canvas.height}  ·  ${preview.diagnose()}` +
+            `  ·  blit ${preview.lastBlit}`,
+          "info",
+        );
+      }
       paintStatus();
     } catch (e) {
       report(e);
@@ -227,7 +243,7 @@ async function open(path: string): Promise<void> {
     const opened = await ipc.openImage(path, Math.max(viewport, 1));
 
     const [pixels, encodeUniform] = await Promise.all([
-      ipc.proxyPixels(),
+      ipc.proxyPixels(opened.proxyWidth * opened.proxyHeight * 4),
       ipc.encodeUniform(opened.document.output.colorspace),
     ]);
     const originalGraph = await ipc.compile(withoutEdits(opened.document));
@@ -242,6 +258,12 @@ async function open(path: string): Promise<void> {
       slider.set(value ?? 0);
     }
 
+    void ipc.log(
+      `opened ${opened.fileName}: ${opened.width}×${opened.height}, proxy ` +
+        `${opened.proxyWidth}×${opened.proxyHeight}, ${pixels.length * 2} bytes, ` +
+        `${opened.sourceSpace}, plan ${session?.graph.nodes.length ?? "?"} nodes`,
+      "info",
+    );
     title.textContent = opened.fileName;
     exportButton.disabled = false;
     empty.style.display = "none";
@@ -416,6 +438,7 @@ function paintStatus(): void {
 
 function report(what: unknown, kind: "error" | "notice" = "error"): void {
   const text = what instanceof Error ? what.message : String(what);
+  void ipc.log(text, kind === "error" ? "error" : "info");
   const el = document.createElement("div");
   el.className = `notice ${kind}`;
   el.textContent = text;

@@ -338,6 +338,21 @@ fn export_image(
     })
 }
 
+/// Somewhere a failure can be read from outside the window.
+///
+/// Every error in the front end lands in a notice, and a notice is only visible to
+/// whoever is looking at the window — which is nobody when the thing that failed is the
+/// preview starting up, because then the window shows an empty canvas and says nothing
+/// anybody can copy. This puts the same sentence on stderr.
+#[tauri::command]
+fn log(message: String, level: String) {
+    // stderr for both. Rust block-buffers stdout when it is a pipe rather than a
+    // terminal, so an informational line written with `println!` can still be sitting
+    // in a buffer when the process is killed — which reads exactly like a front end
+    // that never ran, and cost one diagnosis already.
+    eprintln!("photodesk [{level}] {message}");
+}
+
 // ------------------------------------------------------------------------- main
 
 fn main() {
@@ -353,6 +368,7 @@ fn main() {
             save_sidecar,
             export_image,
             open_on_start,
+            log,
         ])
         .setup(|app| {
             // A path on the command line opens straight into the editor, which is what

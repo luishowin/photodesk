@@ -908,3 +908,45 @@ And a parameter set back to its default is **removed** from the document rather 
 - **Uniform offsets are read back from the linked program, never tabulated.** FROZEN.
 - §16 #16's UI half now exists (`src/panels/light.ts`); the file's own opinion is still open.
 - §16 #7 has a placeholder icon, which is not a decision and is marked as one.
+
+---
+
+## 2026-09-07 — the first real run: three bugs between the window and the photograph
+
+v0.1 was committed measured and green — 134 tests, the front end's own modules rendering identically to wgpu inside Tauri's webview — and the first time a person opened it, the window said "Could not connect to localhost" and then, once that was fixed, showed a black canvas. Both were real, neither was caught by anything, and the reason is the same in both cases: **what was measured was not what shipped.**
+
+### "Could not connect to localhost"
+
+`tauri.conf.json` carried `frontendDist` *and* `devUrl`. A debug build prefers `devUrl`, so `cargo run` went looking for a Vite dev server that was not running, while a release build of the same source loaded `dist/` and worked. Two ways to run one application, differing by profile, one of them dependent on a second process.
+
+`devUrl` is gone. `vite build` takes 200 ms for a 21 kB bundle with no framework in it, so what the dev server bought was a mode that could be wrong.
+
+### A black canvas, with no error anywhere
+
+This one is worth the whole entry.
+
+A Tauri command returning `Response` does **not** arrive in JavaScript as an `ArrayBuffer` — it arrives as a byte array. `ipc.ts` had a line that claimed to handle both shapes and handled one:
+
+```ts
+return raw instanceof ArrayBuffer ? new Uint16Array(raw) : new Uint16Array(raw);
+```
+
+Both branches are identical, and the second one is wrong in a specific way: `new Uint16Array(byteArray)` does not reinterpret pairs of bytes as 16-bit values. It builds an array **twice as long**, holding one byte's *value* in each slot. Every f16 sample became a denormal near zero, so the source texture was black — and `texImage2D` accepts a buffer that is *too long* without complaint (only too short is `INVALID_OPERATION`), so no GL error was raised, no exception thrown, and every diagnostic reported success.
+
+Everything downstream was correct and said so. The graph compiled, the plan executed, the blit reported valid rectangles and `err 0`, the context was not lost, the drawing buffer was the right size, and the photograph was faithfully rendered — black.
+
+**Nothing in the test suite could have caught it.** §12.2's agreement harness runs the front end's real modules, but it feeds them through `fetch()`, which yields a genuine `ArrayBuffer`. The harness was measuring the right code across the wrong boundary. Only running the actual application could find this, and running the actual application is the one thing that had not been done by a person.
+
+The guard is a length check in `ipc.ts`: the proxy must arrive as exactly `width × height × 4` samples. Too few would already have been a GL error; too many is the silent case, and it is now the loud one.
+
+### Finding it took an instrument that did not exist
+
+Every error in the front end lands in a notice, and a notice is only visible to whoever is looking at the window — which is nobody when the thing that failed is the preview starting up. So the app got `ipc.log`, which puts the same sentence on stderr, and `preview.diagnose()`, which reports one line of what GL thinks on the first frame: context lost, drawing-buffer size, max texture, the fitted rectangle, the blit rectangles, and **the centre pixel of the presented canvas**.
+
+That last one is the whole diagnosis in one number. "A frame was drawn" and "a frame with a photograph in it was drawn" are different claims, and for one long session there was no way to tell them apart from outside the window. Both are kept.
+
+Two side-lessons, recorded because each cost a wrong turn. Rust **block-buffers stdout when it is a pipe**, so an informational line written with `println!` can still be in a buffer when the process is killed — which reads exactly like a front end that never ran. And a Python `str.replace` that does not match **does nothing and says nothing**, which is how a probe that was supposed to answer the question reported `(unread)` instead: the same silent-no-op shape as the bug being hunted, in the tool being used to hunt it.
+
+### A disabled tab is indistinguishable from a broken one
+
+Six of the seven tabs are disabled because §14 puts them in v0.2 to v0.5. They carried a `title` tooltip saying so, and were reported as "the other tabs do not work" — which is exactly right, because a hidden explanation is not an explanation. §9.4's posture is that a missing capability greys out **with a reason**, and the reason has to be on the control: each unbuilt tab now shows the version it arrives in, `Crop v0.2`, `Masks v0.4`. Monochrome, quieter than the name, no tooltip required.

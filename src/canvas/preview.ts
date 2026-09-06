@@ -36,6 +36,9 @@ export class Preview {
   private width = 0;
   private height = 0;
   private originalPasses = 0;
+  lastBlit = "(none)";
+  centre = "(unread)";
+  probe = true;
 
   /** Where the image sits in the canvas, in canvas pixels. For hit-testing later. */
   private fitted = { x: 0, y: 0, w: 0, h: 0 };
@@ -115,6 +118,29 @@ export class Preview {
     this.present(shown.output, shown.passes, view, split);
   }
 
+  /**
+   * One line of what GL thinks, the first time a frame is drawn.
+   *
+   * A preview that produces nothing produces no exception either — a failed blit or a
+   * texture that would not allocate raises a GL error code and draws an empty canvas,
+   * which is indistinguishable from a correct render of nothing.
+   */
+  diagnose(): string {
+    const gl = this.gl;
+    return [
+      `err ${gl.getError()}`,
+      `lost ${gl.isContextLost()}`,
+      `drawingBuffer ${gl.drawingBufferWidth}×${gl.drawingBufferHeight}`,
+      `renderer ${gl.getParameter(gl.RENDERER)}`,
+      `version ${gl.getParameter(gl.VERSION)}`,
+      `max texture ${gl.getParameter(gl.MAX_TEXTURE_SIZE)}`,
+      `proxy ${this.width}×${this.height}`,
+      `fitted ${this.fitted.w}×${this.fitted.h} at ${this.fitted.x},${this.fitted.y}`,
+      `float colour buffer ${!!gl.getExtension("EXT_color_buffer_float")}`,
+      `canvas centre ${this.centre}`,
+    ].join("  ·  ");
+  }
+
   /** Fit the image into the canvas and blit, resolving the pass parity. */
   private present(
     editedTarget: Target,
@@ -161,6 +187,8 @@ export class Preview {
         gl.COLOR_BUFFER_BIT,
         gl.LINEAR,
       );
+      this.lastBlit = `src ${sx0},${flip ? this.height : 0}→${sx1},${flip ? 0 : this.height} ` +
+        `dst ${dx0},${y}→${dx1},${y + h} err ${gl.getError()}`;
     };
 
     if (view === "original") {
@@ -171,6 +199,18 @@ export class Preview {
       blit(editedTarget, editedPasses, at, x + w);
     } else {
       blit(editedTarget, editedPasses, x, x + w);
+    }
+    // One pixel of what was just presented, from the middle of where the photograph
+    // landed — read before the read binding is dropped. Kept rather than deleted with
+    // the rest of the scaffolding, because the difference between "a frame was drawn"
+    // and "a frame with a photograph in it was drawn" is the whole of one long
+    // debugging session: a black texture, a successful blit, and no error anywhere.
+    if (this.probe) {
+      const px = new Uint8Array(4);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+      gl.readPixels(x + (w >> 1), ch - 1 - (y + (h >> 1)), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      this.centre = `${px[0]},${px[1]},${px[2]},${px[3]}`;
+      this.probe = false;
     }
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
   }

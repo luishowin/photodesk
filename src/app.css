@@ -96,6 +96,16 @@ header .chrome-button:last-child { justify-self: end; }
 .tab.active { color: var(--text); border-bottom-color: var(--text); }
 .tab:disabled { color: var(--text-mute); cursor: default; }
 
+/* The version a tab arrives in, on the tab. §10.1 permits no hue here and needs none:
+   the label is quieter than the name and that is the whole signal. */
+.tab-version {
+  margin-left: 5px;
+  font-size: 10px;
+  font-family: var(--numeric);
+  color: var(--text-mute);
+  vertical-align: 1px;
+}
+
 /* ---------------------------------------------------------------------- panels */
 
 .panels {
