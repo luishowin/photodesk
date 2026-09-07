@@ -76,6 +76,15 @@ pub fn lower(
             version: 300,
             is_webgl: true,
         },
+        // Stated rather than inherited from `Default`, because the front end's blit
+        // depends on it. `ADJUST_COORDINATE_SPACE` negates `gl_Position.y`, which is
+        // what makes a pass in GL write the same row indices as the same pass in wgpu
+        // — the reason §12.2 agrees to the code instead of agreeing upside down, and
+        // the reason `preview.ts` flips exactly once, at the end, rather than tracking
+        // a parity. It is naga's default today; a release that changed the default
+        // would silently turn every previewed photograph upside down, and this line is
+        // what stops that from being a question about naga's changelog.
+        writer_flags: glsl::WriterFlags::ADJUST_COORDINATE_SPACE,
         ..Default::default()
     };
     let pipeline_options = glsl::PipelineOptions {

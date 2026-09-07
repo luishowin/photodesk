@@ -18,8 +18,11 @@
 //! 1. the uniform offsets — the front end finds them by name from the linked program,
 //!    so a rename in the WGSL that nothing followed shows up as one slider doing
 //!    nothing and the rest being right;
-//! 2. the orientation parity — GL's framebuffer origin is bottom-left and the shaders
-//!    are authored for wgpu's top-left, so an odd pass count presents upside down;
+//! 2. the orientation — GL's framebuffer origin is bottom-left and the shaders are
+//!    authored for wgpu's top-left, and naga's `ADJUST_COORDINATE_SPACE` is what
+//!    reconciles them. Both plans below must read *direct*, whatever their pass count:
+//!    that is the invariant `preview.ts` relies on to flip once, at the blit, instead
+//!    of tracking a parity that was wrong half the time;
 //! 3. the maths, which is the least likely, because both sides ran the same file.
 
 use std::path::PathBuf;
@@ -123,15 +126,30 @@ fn emit_the_front_ends_inputs_and_the_wgpu_reference() {
     std::fs::write(dir.join("plan-source.f16"), &rgba).expect("write source");
 
     let doc = document();
-    let plan = graph::compile(&doc).expect("compile");
-    std::fs::write(
-        dir.join("plan-graph.json"),
-        serde_json::to_string_pretty(&plan).expect("serialise the plan"),
-    )
-    .expect("write plan");
+
+    // Two plans, because the preview blits two things and they do not have the same
+    // number of passes. The edited document draws `adjust` then `encode`; §11's
+    // hold-for-original draws the *same document with an empty stack*, which is one
+    // pass. An orientation rule derived from the pass count is right for one of these
+    // and wrong for the other, which is what happened: v0.1 presented every unedited
+    // photograph upside down and this harness could not see it, because it only ever
+    // ran the even case.
+    let mut plain = doc.clone();
+    plain.stack.clear();
+
+    let mut plans = Vec::new();
+    for (name, doc) in [("plan", &doc), ("plan-plain", &plain)] {
+        let plan = graph::compile(doc).expect("compile");
+        std::fs::write(
+            dir.join(format!("{name}-graph.json")),
+            serde_json::to_string_pretty(&plan).expect("serialise the plan"),
+        )
+        .expect("write plan");
+        plans.push((name, plan));
+    }
     std::fs::write(dir.join("plan-encode.bin"), encode_uniform_bytes(&SRGB)).expect("write uniform");
 
-    // The reference: the same plan, through wgpu, at the same size.
+    // The reference: the same plans, through wgpu, at the same size.
     let renderer = match Renderer::new() {
         Ok(r) => r,
         Err(e) => {
@@ -139,17 +157,22 @@ fn emit_the_front_ends_inputs_and_the_wgpu_reference() {
             return;
         }
     };
-    let rendered = renderer.render(&plan, &image).expect("render");
-    // Display-encoded 8-bit, which is what the preview's final target holds and what a
-    // `readPixels` on the webview side will return.
-    std::fs::write(dir.join("plan-reference.rgb8"), rendered.to_u8()).expect("write reference");
-
+    for (name, plan) in &plans {
+        let rendered = renderer.render(plan, &image).expect("render");
+        // Display-encoded 8-bit, which is what the preview's final target holds and what
+        // a `readPixels` on the webview side will return.
+        std::fs::write(dir.join(format!("{name}-reference.rgb8")), rendered.to_u8())
+            .expect("write reference");
+    }
     println!(
-        "wrote {} — {}×{}, {} nodes, reference {} bytes",
+        "wrote {} — {}×{}, plans: {}",
         dir.display(),
         N,
         N,
-        plan.len(),
-        rendered.to_u8().len()
+        plans
+            .iter()
+            .map(|(name, plan)| format!("{name} ({} nodes)", plan.len()))
+            .collect::<Vec<_>>()
+            .join(", "),
     );
 }

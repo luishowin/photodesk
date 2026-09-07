@@ -10,11 +10,15 @@
  * offsets in TypeScript would be a second description of a layout naga owns, and it
  * would go stale silently: the slider would move and nothing would happen.
  *
- * **Every pass flips the image vertically.** The shaders are authored for wgpu, whose
- * framebuffer origin is top-left; GL's is bottom-left, so the same `uv` expression
- * addresses the opposite end. Spike C hit this and scored both orientations rather than
- * assuming one (`SPIKE-C.md` reports "direct"). Here it is handled once, at the blit, by
- * tracking parity — see `preview.ts`.
+ * **A pass does not flip the image, and it is worth knowing why not.** The shaders are
+ * authored for wgpu, whose framebuffer origin is top-left, and GL's is bottom-left — so
+ * the same `uv` expression would address the opposite end, except that `engine::glsl`
+ * lowers with naga's `ADJUST_COORDINATE_SPACE` and that negates `gl_Position.y`. A GL
+ * pass therefore writes the row indices wgpu's writes, however many passes there are.
+ * Spike C scored both orientations rather than assuming one and reports "direct"
+ * (`SPIKE-C.md`); `tests/renderer/` now scores both an odd and an even pass count,
+ * because for one long release the even case was the only one measured and the odd one
+ * was upside down on screen. What remains is a single flip at the blit — `preview.ts`.
  */
 
 export class GlError extends Error {}

@@ -17,7 +17,7 @@ Don't edit past DECISIONS entries.
 
 ## Current state
 
-**Spec v0.20. Phase 0 complete; v0.1 runs.** 134 tests, everything on `main` and pushed. (`cargo test` prints two `failed to parse serde attribute` warnings from ts-rs; both are benign — the `ts(type = "string")` override already emits what they would have, and `deny_unknown_fields` has no TypeScript meaning.)
+**Spec v0.20. Phase 0 complete; v0.1 runs, and has now been looked at.** 134 tests, everything on `main` and pushed. (`cargo test` prints two `failed to parse serde attribute` warnings from ts-rs; both are benign — the `ts(type = "string")` override already emits what they would have, and `deny_unknown_fields` has no TypeScript meaning.)
 
 Phase 0's three spikes ran on 2026-09-05 and two of the three answers were not the expected ones — Spike A's gate **failed** (no fork), B and C are green. Their reports are `docs/{FORK-AUDIT,SPIKE-B,SPIKE-C}.md`. Read `FORK-AUDIT.md` before revisiting anything about the render path.
 
@@ -35,7 +35,11 @@ v0.1's headless half is built. What remains is the part a person touches.
 
 **The measured paths were all correct and the application still showed a black canvas**, because the one step nothing measured was the shape the proxy arrives in. See the traps below; the lesson is that a harness feeding itself `fetch()` cannot check what Tauri's IPC hands over, and only running the real thing could.
 
-**§12.2 and §12.3 both run, and §12.2 now runs across the boundary it was written for.** Source preservation has all five of its steps; proxy/full-res agreement is measured with a *precondition* rather than a number (see below); and the front end's own modules, in Tauri's own webview, render the product's shaders **identically to wgpu — max 0 of 255 over 12,288 channels**.
+**The second session of running it found three more of the same shape.** Every photograph was presented **upside down** — `preview.ts` derived a flip from the pass count on the theory that each pass inverts, which naga's `ADJUST_COORDINATE_SPACE` already settles, so the rule was right only for an even count and an unedited photograph is one pass. Opening a 12 MP photograph took **9.2 seconds**, 6.8 of them serialising the proxy as a JSON array of 97 million numbers, because the app's own CSP had no `connect-src ipc:` and Tauri had silently fallen back off its fast transport. And §1's native subject, a HEIC, had still never been opened. All three are fixed; `DECISIONS.md`'s second 2026-09-07 entry is the long version.
+
+**The instrument that found two of them in one capture.** A Tauri window cannot be screenshotted from a shell on Wayland, but `GDK_BACKEND=x11` makes it an XWayland client and then `import -window PhotoDesk shot.png` works. That is the whole apparatus, and it is the difference between reasoning about the window and looking at it.
+
+**§12.2 and §12.3 both run, and §12.2 now runs across the boundary it was written for.** Source preservation has all five of its steps; proxy/full-res agreement is measured with a *precondition* rather than a number (see below); and the front end's own modules, in Tauri's own webview, render the product's shaders **identically to wgpu — max 0 of 255 over 12,288 channels**. It measures **two** plans, an even pass count and an odd one, since the even case alone cannot tell a correct orientation from an inverted one — see the traps.
 
 ```
 cargo test -p photodesk-renderer-spike        # emits the inputs and the reference
@@ -52,6 +56,16 @@ npm install && npm run build          # the front end; dist/ is what the window 
 cargo run -p photodesk-app [path]     # a path opens straight into the editor
 ```
 
+`cargo run`, not `./target/…/photodesk-app` — the front end is baked into the binary, so
+running it directly after a front-end edit silently runs the old one. And to see the
+window from a shell:
+
+```
+cargo run -p photodesk-color --example make-heic -- /tmp/scene.heic   # something to open
+GDK_BACKEND=x11 cargo run -p photodesk-app -- /tmp/scene.heic &       # XWayland, so it can be captured
+import -window PhotoDesk shot.png
+```
+
 The four devel packages are installed. **`npm run build` is not optional and there is no dev-server mode** — `tauri.conf.json` has no `devUrl`, deliberately: with one, a debug build loads `http://localhost:1420` and a release build loads `dist/`, which is two ways to run the same application, one of them failing with "Connection refused" unless a second process happens to be running. `vite build` takes 200 ms for a 21 kB bundle, so what a dev server actually buys here is a mode that can be wrong. It cost one broken first run to find that out.
 
 `npm run dev` still serves the page for looking at chrome and layout without a photograph; `ipc.ts` says so in a sentence rather than failing with a `TypeError`.
@@ -63,12 +77,18 @@ application are different claims (see the black canvas, below).
 
 **Verified by measurement.** Decode, graph compile, render and export headless (134
 tests). The front end's own modules rendering identically to wgpu inside Tauri's webview
-— max 0 of 255 over 12,288 channels. And the presented canvas containing the photograph
-rather than nothing, which is `preview.diagnose()`'s centre pixel and the reason it is
-kept.
+— max 0 of 255 over 12,288 channels, at an odd pass count and an even one. And the
+presented canvas containing the photograph rather than nothing, which is
+`preview.diagnose()`'s centre pixel and the reason it is kept.
 
 **Verified by a synthetic drag** in a mocked-IPC harness: a slider moves, the document
 changes, the picture follows.
+
+**Verified by looking at it.** A JPEG and a HEIC — both branches of §4's HEIF colour
+reading, ICC and NCLX — open, land the right way up, and report the right space in the
+readout. Screenshots via the `GDK_BACKEND=x11` route above; `make-heic` builds the HEIC.
+Open time is on the `opened …` line now: 1.9 s for a 12 MP JPEG, 2.3 s for a 12 MP HEIC,
+0.8 s of which is starting the process and the webview.
 
 **Never run, by a test or by a person.** These are the paths to be suspicious of:
 
@@ -77,9 +97,14 @@ changes, the picture follows.
   dialogs around them are not, and the last bug lived in exactly that layer.
 - **`Space` and `\`** — hold-for-original and the before/after split, including whether
   the seam following the pointer is right (§11 specifies the first and is silent on the
-  second).
+  second). The *plan* behind `Space` is now measured (`tests/renderer/`'s second case is
+  the empty stack); what nobody has done is hold the key.
 - **`Ctrl+Z` / `Ctrl+Shift+Z`** through the UI.
-- **A HEIC.** §1's native subject, and every photograph opened so far has been a JPEG.
+
+There is no way to drive the window's keyboard from a shell here — no `xdotool`, no
+`ydotool`, no python-xlib — so the four above want either a person or one
+`sudo dnf install xdotool`, after which the XWayland route already used for screenshots
+would reach them.
 
 ### What's next
 
@@ -87,7 +112,8 @@ changes, the picture follows.
 
 Open and worth doing before it:
 
-- **Use it.** The list above is the honest state; §11's feel — 0.1× travel on `Shift`, where the numeric entry lands, whether the split handle should be sticky — is a thing to sit with rather than assert, and the untested commands want one pass by hand before v0.2 builds on them.
+- **Use it.** Still the first item, and still worth it — three real bugs came out of two sessions of it. What is left is the half a shell cannot reach: §11's feel — 0.1× travel on `Shift`, where the numeric entry lands, whether the split handle should be sticky — is a thing to sit with rather than assert, and `Ctrl+E`, `Ctrl+Z`, `Space` and `\` want one pass by hand before v0.2 builds on them.
+- **The window gives the photograph under half its height.** `app.css` is `grid-template-rows: auto 1fr auto auto auto`, so the stage is one row and the panel, readout and notices stack under it: at 1440×900 the photograph gets 617×411 and the panel band keeps a third of its width empty. §10 does not specify a layout, so this is an open question rather than a bug — but a right-hand panel is the obvious alternative and it is worth deciding before v0.2 adds a second tab's worth of controls.
 - **§16 #7's icon** is a placeholder, marked as one.
 - **§16 #16** — the register's UI half now exists in `src/panels/light.ts`; whether the *file* has an opinion about ranges is still open, due before v0.2's presets.
 - #18 (tiled export) and #19 (HEIF output) still wait.
@@ -128,6 +154,8 @@ src/                        the front end (§10.3: no framework, TypeScript + Vi
 ├── design/tokens.css       §10.1's table, verbatim
 └── document/generated/     TypeScript types, emitted from the Rust schema, committed
 tests/color/                Spike B's harness, kept permanent. Tests the product now
+└── examples/make-heic.rs   builds a HEIC to open by hand — §1's subject, on a machine
+                            that has no phone. Needs libheif-freeworld; names it if not
 tests/renderer/             Spike C's harness, kept permanent
 ```
 
@@ -139,6 +167,7 @@ tests/renderer/             Spike C's harness, kept permanent
 
 - **Never vendor RapidRAW code.** The gate failed, so there is no fork and no reason to. It is AGPL-3.0 and this repository is public. `FORK-AUDIT.md` quotes identifiers and line numbers for audit purposes; that is the ceiling.
 - **`FORK-AUDIT.md`, `SPIKE-B.md` and `SPIKE-C.md` are spike reports, not living documents.** They record what was measured on 2026-09-05. If something in one turns out wrong, that is a `DECISIONS.md` entry.
+- **The front end is embedded in the binary, so `npm run build` alone changes nothing that runs.** `generate_context!` bakes `dist/` in at compile time. `cargo run -p photodesk-app` rebuilds and is therefore correct; running `./target/release/photodesk-app` directly — the obvious thing when iterating — silently runs the *previous* front end. The symptom is perfect: log lines you added never appear, ones that were already there do, and nothing errors. The decisive test is to change an **existing** message and see whether the change shows up.
 - **`docs/` is the GitHub Pages source.** `docs/index.html` is the published status page, updated **on request only** — do not regenerate it as a side effect of other work. **It is very stale**: spec v0.4, all three spikes open, the licensing review still gating Spike A. Fourteen spec versions and all of v0.1 behind.
 
 **One source, never two**
@@ -156,7 +185,7 @@ This is the project's recurring shape, and it has now decided five things:
 
 **Measurement**
 
-- **Check the instrument first, and a readout is an instrument too.** Ten times now a confident number has measured the wrong thing, each caught only by asking why a result had the shape it did: a pass sweep of no-ops; a headroom table destroyed by 8-bit quantisation; a GL error hidden behind a green budget table; an agreement test fed different inputs on each side; a ΔE ranking that would have picked the *flattest* gamut policy; a shader disagreement that was the driver's rounding mode; §12.2's 57 codes, which cost two wrong diagnoses before landing on the gamut map; and the PNG round trip's 0.286, which was a display-encoded frame being compared against a linear decode — the number was `to_linear` of the other side, which is what gave it away. The last two were the front end's own frame readout rather than a test: `render`'s duration is CPU *submit* time, because GL commands are asynchronous, so it read 0.00 ms against a 16 ms budget; and the interval between drawn frames is real but `requestAnimationFrame`-bound, so it read 17.0 ms against "budget 16.0 ms" while comfortably meeting it. It reports **fps** now, which is how §7.3 states the requirement and has neither failure mode.
+- **Check the instrument first, and a readout is an instrument too.** Twelve times now a confident number has measured the wrong thing, each caught only by asking why a result had the shape it did: a pass sweep of no-ops; a headroom table destroyed by 8-bit quantisation; a GL error hidden behind a green budget table; an agreement test fed different inputs on each side; a ΔE ranking that would have picked the *flattest* gamut policy; a shader disagreement that was the driver's rounding mode; §12.2's 57 codes, which cost two wrong diagnoses before landing on the gamut map; and the PNG round trip's 0.286, which was a display-encoded frame being compared against a linear decode — the number was `to_linear` of the other side, which is what gave it away. The last two were the front end's own frame readout rather than a test: `render`'s duration is CPU *submit* time, because GL commands are asynchronous, so it read 0.00 ms against a 16 ms budget; and the interval between drawn frames is real but `requestAnimationFrame`-bound, so it read 17.0 ms against "budget 16.0 ms" while comfortably meeting it. It reports **fps** now, which is how §7.3 states the requirement and has neither failure mode. And §12.2's orientation check, which scored both parities honestly and then only ever ran the pass count at which both answers agree — the negative control is the proof: turn naga's `ADJUST_COORDINATE_SPACE` off and the two-pass case *still* reads `direct`, because two inversions cancel.
 - **A green test can quietly change what it measures.** Freezing the gamut policy took Spike B's test 2 from mean ΔE 0.0807 to 1.4183 against its own 1.5 threshold — still passing, and no longer about transform fidelity, because its reference converter clips and the pipeline no longer did. It is pinned to `GamutPolicy::ClipLinear` now. When a policy constant moves, re-read every test whose reference embeds the old one.
 - **§12.2's bar is a precondition, not a number.** Band-limited **and** in-gamut, or the measurement is about an inherent property rather than about the renderer. Under both it is 0.1486 of an 8-bit code; with detail finer than the proxy it is 152. Don't loosen the threshold when it fails — check the fixture still satisfies both conditions.
 - **Both harnesses cross-validate on purpose.** `tests/color/` checks ΔE2000 and the matrices against lcms2, and the ICC parser and writer in both directions; `tests/renderer/` keeps a negative control asserting compute is *refused*. Don't delete either as redundant.
@@ -170,8 +199,9 @@ This is the project's recurring shape, and it has now decided five things:
 - **EXIF orientation is applied to the pixels, never carried forward.** It is structure, not description: a sideways file whose tag says "rotate me" reads correctly only to software honouring the tag, so `metadata: strip` would rotate the photograph. libheif applies the container transform itself; the JPEG path does it explicitly.
 - **The photographs are gone from `~/Downloads`.** `real_photos.rs`, `gamut_policy.rs` and `decode_path.rs`'s real-file cases all skip. They are personal files and were never in the repo; put one back or set `PHOTODESK_CORPUS_DIR`. The ΔL\*/ΔC\*/ΔH decomposition on real pixels is the one number `DECISIONS.md` still owes.
 - **`tests/renderer/web/generated/` is gitignored and regenerable.** `cargo test -p photodesk-renderer-spike` emits it. The browser harness loads the *generated* GLSL rather than a twin, deliberately.
+- **`tauri.conf.json`'s CSP must carry `connect-src ipc:`, and nothing says so if it doesn't.** Tauri v2 answers `invoke` over a `fetch` to its own `ipc:` scheme and falls back to `postMessage` — where a `Vec<u8>` is serialised as a JSON array of numbers — the first time that fetch is refused. `default-src 'self'` refuses it. The fallback is permanent for the session, announced only by a `console.warn` in a webview with no devtools, and correct: the photograph is right and 97 MB of proxy costs 6.8 seconds instead of 0.77. `ipc.ts` reports the array shape for that reason.
 - **A Tauri command returning `Response` does not arrive in JS as an `ArrayBuffer`.** It arrives as a byte array, and `new Uint16Array(bytes)` does not reinterpret pairs — it builds an array twice as long holding one byte's *value* per slot. Every f16 becomes a denormal near zero, so the texture is black; `texImage2D` accepts an over-long buffer without complaint, so **nothing raises an error anywhere**. `ipc.ts` reinterprets through `bytesOf` and checks the resulting length against `width × height × 4`. Do not delete that check: it is the only thing standing between this bug and a silent black photograph.
-- **Every WebGL pass inverts the image, and wgpu's passes do not.** The shaders are authored for wgpu's top-left framebuffer origin; GL's is bottom-left, so the same `uv` addresses the opposite end. `preview.ts` resolves the parity at the blit. The relationship is not the obvious one: a *direct* readback means the top row is at `v = 0`, and the canvas's `y = 0` is its **bottom**, so presenting it upright needs a *flipped* blit. Getting that backwards was the first thing that happened.
+- **A WebGL pass does *not* invert the image, and the obvious reasoning says it does.** GL's framebuffer origin is bottom-left and wgpu's is top-left, so the same `uv` would address the opposite end — except `engine::glsl` lowers with naga's `ADJUST_COORDINATE_SPACE`, which negates `gl_Position.y` and settles it. A pass is identity in index space at any count. `preview.ts` therefore flips **once, at the blit, unconditionally**; the parity rule it used to derive from the pass count was right only for even counts, and an unedited photograph is one pass, so v0.1 presented every photograph upside down until the first slider moved. `glsl.rs` states the writer flag rather than inheriting naga's default, because the blit depends on it.
 - **`blitFramebuffer` refuses to copy float → fixed-point** (ES 3.0 §4.3.2), so the plan's output node draws into an 8-bit target — which is right anyway, stage 13 having encoded for the display by then. It raises nothing the user can see: the symptom is a blank canvas.
 - **A WebKit `get_snapshot` will not capture a WebGL canvas unless something forced a composite immediately before.** Two "blank canvas" investigations were this and not a bug. The agreement harness is the instrument; a screenshot is not.
 - **The front end can put a sentence on stderr** — `ipc.log`, and the `log` command behind it. Every error already lands in a notice, and a notice is invisible when the thing that failed is the preview starting up. Use it; it is how the black canvas was eventually found. Note that `println!` block-buffers when stdout is a pipe, so `log` writes to stderr for both levels.

@@ -235,6 +235,7 @@ async function chooseAndOpen(): Promise<void> {
 }
 
 async function open(path: string): Promise<void> {
+  const started = performance.now();
   try {
     title.textContent = "Opening…";
     // §7.1: the proxy is min(2 × viewport longest edge, source longest edge).
@@ -259,7 +260,8 @@ async function open(path: string): Promise<void> {
     }
 
     void ipc.log(
-      `opened ${opened.fileName}: ${opened.width}×${opened.height}, proxy ` +
+      `opened ${opened.fileName} in ${(performance.now() - started).toFixed(0)} ms: ` +
+        `${opened.width}×${opened.height}, proxy ` +
         `${opened.proxyWidth}×${opened.proxyHeight}, ${pixels.length * 2} bytes, ` +
         `${opened.sourceSpace}, plan ${session?.graph.nodes.length ?? "?"} nodes`,
       "info",

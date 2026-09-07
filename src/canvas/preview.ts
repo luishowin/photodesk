@@ -3,13 +3,22 @@
  *
  * The chain is drawn entirely into offscreen targets and then **blitted** to the canvas.
  * That is not an extra step for its own sake — it is where the orientation problem gets
- * resolved. `shaders/photodesk/` is authored for wgpu, whose framebuffer origin is
- * top-left; GL's is bottom-left, so the same `uv` expression addresses the opposite end
- * and every pass inverts the image. An odd number of passes would present the
- * photograph upside down, and the pass count changes with the number of layers, so it
- * cannot be resolved by convention. `blitFramebuffer` takes explicit source coordinates,
- * so the parity is handled in one arithmetic expression rather than in a shader that §0
- * freezes at one source.
+ * resolved, and the resolution is one flip at the end rather than a parity that
+ * accumulates.
+ *
+ * `shaders/photodesk/` is authored for wgpu, whose framebuffer origin is top-left, and
+ * GL's is bottom-left. **naga already reconciles that**: `engine::glsl` lowers with
+ * `ADJUST_COORDINATE_SPACE`, which negates `gl_Position.y`, so a pass in GL writes the
+ * same row indices as the same pass in wgpu. That is why §12.2 agrees to the code
+ * (`max 0 of 255`) rather than agreeing upside down, and it means a pass is *identity*
+ * in index space — one, two or ten of them leave the photograph's first row at
+ * framebuffer row 0.
+ *
+ * What remains is the last step alone: framebuffer row 0 is the canvas's **bottom**, so
+ * the source rectangle is read bottom-up. Unconditionally. `preview.ts` used to derive
+ * that from the pass count, on the theory that each pass inverted — which made the
+ * picture correct only when the count happened to be even, and a photograph with no
+ * adjustments (one `encode` pass) presented upside down for the whole of v0.1.
  *
  * The blit earns its place twice over: scaling to fit is free, and §11's split view is a
  * second blit with a narrower rectangle rather than a second shader.
@@ -35,7 +44,6 @@ export class Preview {
   private original: Target | null = null;
   private width = 0;
   private height = 0;
-  private originalPasses = 0;
   lastBlit = "(none)";
   centre = "(unread)";
   probe = true;
@@ -85,8 +93,7 @@ export class Preview {
 
     // Straight into the original's own target, so the edited frame can overwrite the
     // shared one on every draw without touching it.
-    const plain = execute(this.resources(this.original), originalGraph);
-    this.originalPasses = plain.passes;
+    execute(this.resources(this.original), originalGraph);
   }
 
   get loaded(): boolean {
@@ -115,7 +122,7 @@ export class Preview {
   render(graph: Graph, view: View, split: number): void {
     if (!this.source || !this.targets || !this.display) return;
     const shown = execute(this.resources(this.display), graph);
-    this.present(shown.output, shown.passes, view, split);
+    this.present(shown.output, view, split);
   }
 
   /**
@@ -141,13 +148,8 @@ export class Preview {
     ].join("  ·  ");
   }
 
-  /** Fit the image into the canvas and blit, resolving the pass parity. */
-  private present(
-    editedTarget: Target,
-    editedPasses: number,
-    view: View,
-    split: number,
-  ): void {
+  /** Fit the image into the canvas and blit it the right way up. */
+  private present(editedTarget: Target, view: View, split: number): void {
     const gl = this.gl;
     const dpr = globalThis.devicePixelRatio || 1;
     const cw = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
@@ -172,33 +174,32 @@ export class Preview {
     gl.clearColor(0x33 / 255, 0x33 / 255, 0x33 / 255, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
-    const blit = (src: Target, passes: number, dx0: number, dx1: number) => {
-      // Every pass inverts, so an even count leaves the array's first row at texture
-      // v=0 and the canvas — whose y=0 is its *bottom* — needs it read the other way.
-      const flip = passes % 2 === 0;
+    const blit = (src: Target, dx0: number, dx1: number) => {
       const sx0 = Math.round(((dx0 - x) / Math.max(w, 1)) * this.width);
       const sx1 = Math.round(((dx1 - x) / Math.max(w, 1)) * this.width);
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, src.framebuffer);
+      // Read the source bottom-up, which is what presents it upright. See the note on
+      // this class: the flip is one step at the end, not a parity that accumulates.
       gl.blitFramebuffer(
-        sx0, flip ? this.height : 0,
-        sx1, flip ? 0 : this.height,
+        sx0, this.height,
+        sx1, 0,
         dx0, y,
         dx1, y + h,
         gl.COLOR_BUFFER_BIT,
         gl.LINEAR,
       );
-      this.lastBlit = `src ${sx0},${flip ? this.height : 0}→${sx1},${flip ? 0 : this.height} ` +
+      this.lastBlit = `src ${sx0},${this.height}→${sx1},0 ` +
         `dst ${dx0},${y}→${dx1},${y + h} err ${gl.getError()}`;
     };
 
     if (view === "original") {
-      blit(this.original as Target, this.originalPasses, x, x + w);
+      blit(this.original as Target, x, x + w);
     } else if (view === "split") {
       const at = x + Math.round(w * split);
-      blit(this.original as Target, this.originalPasses, x, at);
-      blit(editedTarget, editedPasses, at, x + w);
+      blit(this.original as Target, x, at);
+      blit(editedTarget, at, x + w);
     } else {
-      blit(editedTarget, editedPasses, x, x + w);
+      blit(editedTarget, x, x + w);
     }
     // One pixel of what was just presented, from the middle of where the photograph
     // landed — read before the read binding is dropped. Kept rather than deleted with

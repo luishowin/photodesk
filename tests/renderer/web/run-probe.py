@@ -228,46 +228,53 @@ def report_plan(r, engine="?"):
         print(f"  FAILED  {r.get('error', 'no reason given')}")
         return 1
 
-    direct, flipped = r.get("direct", {}), r.get("flipped", {})
-    # A blit flip is required exactly when the readback matched *directly* — see the
-    # note beside `blitFlip` in plan-entry.ts, which spells out why those two line up
-    # the way round they do.
-    wants_flip = bool(r.get("blitFlip"))
-    implied = "direct" if wants_flip else "flipped"
-    print(f"  passes          {r.get('passes')}")
-    print(f"  orientation     {r.get('orientation')}  "
-          f"(preview.ts blits {'flipped' if wants_flip else 'directly'}, "
-          f"which is right iff this reads {implied})")
-    print(f"  direct          max {direct.get('max')}  mean {direct.get('mean')}  "
-          f"over 1 code: {direct.get('over1')}")
-    print(f"  flipped         max {flipped.get('max')}  mean {flipped.get('mean')}  "
-          f"over 1 code: {flipped.get('over1')}")
     missing = r.get("missingUniforms") or []
-    print(f"  uniforms found  {'all nine' if not missing else 'MISSING ' + ', '.join(missing)}")
-    print("-" * 72)
-
-    best = direct if r.get("orientation") == "direct" else flipped
     fails = []
     if missing:
         fails.append("the lowered shader does not carry every document parameter, so at "
                      "least one control binds to nothing")
-    if r.get("orientation") != implied:
-        fails.append(f"the readback matched {r.get('orientation')}, so preview.ts should "
-                     f"blit {'directly' if wants_flip else 'flipped'} and it does the "
-                     f"opposite — the photograph is presented upside down")
-    # One 8-bit code. Both sides ran the same shader on the same input, so the only
-    # honest budget is the difference between two roundings of one float — and §16 #15
-    # already records that an RGBA16F attachment can truncate rather than round.
-    if best.get("max", 999) > 1:
-        fails.append(f"the two renderers disagree by {best.get('max')} codes, which is "
-                     f"more than the one a stored f16 channel can differ by")
+
+    for case in r.get("cases", []):
+        direct = case.get("direct", {})
+        flipped = case.get("flipped", {})
+        orientation = case.get("orientation")
+        print(f"  {case.get('name')}  —  {case.get('passes')} pass"
+              f"{'' if case.get('passes') == 1 else 'es'}")
+        print(f"    orientation   {orientation}")
+        print(f"    direct        max {direct.get('max')}  mean {direct.get('mean')}  "
+              f"over 1 code: {direct.get('over1')}")
+        print(f"    flipped       max {flipped.get('max')}  mean {flipped.get('mean')}  "
+              f"over 1 code: {flipped.get('over1')}")
+        # `preview.ts` blits the source rectangle bottom-up, unconditionally, and that
+        # is correct exactly while the readback reads *direct* — the image's top row at
+        # v = 0, against a default framebuffer whose y = 0 is the canvas's bottom. It
+        # holds for any pass count because naga lowers with ADJUST_COORDINATE_SPACE, so
+        # a GL pass writes the row indices wgpu's does. If that ever stops being true
+        # this is where it surfaces, for both pass counts rather than the even one.
+        if orientation != "direct":
+            fails.append(f"the {case.get('name')} plan read {orientation} rather than "
+                         f"direct, so preview.ts's unconditional bottom-up blit presents "
+                         f"it upside down")
+        best = direct if orientation == "direct" else flipped
+        # One 8-bit code. Both sides ran the same shader on the same input, so the only
+        # honest budget is the difference between two roundings of one float — and
+        # §16 #15 already records that an RGBA16F attachment can truncate rather than
+        # round.
+        if best.get("max", 999) > 1:
+            fails.append(f"the two renderers disagree by {best.get('max')} codes on the "
+                         f"{case.get('name')} plan, which is more than the one a stored "
+                         f"f16 channel can differ by")
+
+    print(f"  uniforms found  {'all nine' if not missing else 'MISSING ' + ', '.join(missing)}")
+    print("-" * 72)
 
     if fails:
         for f in fails:
             print(f"  FAIL  {f}")
         return 1
-    print("  PASS  the webview and wgpu render the same plan to within one 8-bit code,")
-    print("        the nine parameters all bind by name, and the parity matches.")
+    print("  PASS  the webview and wgpu render the same plans to within one 8-bit code,")
+    print("        the nine parameters all bind by name, and both pass counts read")
+    print("        direct — which is what makes preview.ts's one flip correct.")
     return 0
 
 

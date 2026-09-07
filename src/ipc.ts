@@ -79,16 +79,42 @@ export const openImage = (path: string, viewport: number) =>
  *
  * This is the one large thing that crosses, and it crosses once.
  *
+ * **Which shape it arrives in is worth two separate paragraphs, because getting it
+ * wrong cost a black canvas once and seven seconds a photograph once.**
+ *
  * **The bytes are reinterpreted, never copied element-wise, and that distinction cost a
- * black canvas.** A Tauri command returning `Response` arrives here as a byte array
- * rather than as an `ArrayBuffer`, and `new Uint16Array(bytesArray)` does not
+ * black canvas.** A Tauri command returning `Response` does not necessarily arrive as
+ * an `ArrayBuffer` — on the fallback transport below it is a byte array — and
+ * `new Uint16Array(bytesArray)` does not
  * reinterpret pairs of bytes as 16-bit values — it builds an array twice as long with
  * one byte's *value* in each slot. Every f16 is then a denormal near zero, so the
  * texture is black; and `texImage2D` accepts a buffer that is too long without
  * complaint, so nothing anywhere raises an error. See `bytesOf`.
+ *
+ * **And an `ArrayBuffer` is the shape that means the transport is the fast one.** Tauri
+ * answers `invoke` over a `fetch` to its own `ipc:` scheme, and falls back to
+ * `postMessage` — where a byte vector is serialised as a JSON array of numbers — the
+ * first time that fetch is refused, for the rest of the session, having said so only
+ * to a console nobody can read. 97 MB of proxy is 6.8 seconds that way and 0.77 the
+ * other. So the array shape is handled and *reported*: it is not incorrect, it is the
+ * visible end of something upstream being wrong.
  */
 export const proxyPixels = async (expected: number): Promise<Uint16Array> => {
-  const bytes = bytesOf(await invoke<ArrayBuffer | ArrayBufferView | number[]>("proxy_pixels"));
+  const raw = await invoke<ArrayBuffer | ArrayBufferView | number[]>("proxy_pixels");
+  // Correct in every shape, and fast in only one. See `bytesOf` for the correctness
+  // half; this is the speed half, and it is checked because the slow shape is what
+  // arrives when something *else* is wrong.
+  if (Array.isArray(raw)) {
+    void log(
+      `the proxy arrived as an array of ${raw.length} numbers rather than an ArrayBuffer. ` +
+        `That is Tauri's postMessage fallback, which it takes silently and permanently ` +
+        `after its fetch-based IPC is refused once — the usual cause is a CSP without ` +
+        `\`connect-src ipc:\`. The picture will be correct and opening it will take about ` +
+        `seven seconds a photograph instead of one.`,
+      "error",
+    );
+  }
+  const bytes = bytesOf(raw);
   const pixels = new Uint16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength >> 1);
   if (pixels.length !== expected) {
     throw new Error(

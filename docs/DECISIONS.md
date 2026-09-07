@@ -950,3 +950,157 @@ Two side-lessons, recorded because each cost a wrong turn. Rust **block-buffers 
 ### A disabled tab is indistinguishable from a broken one
 
 Six of the seven tabs are disabled because §14 puts them in v0.2 to v0.5. They carried a `title` tooltip saying so, and were reported as "the other tabs do not work" — which is exactly right, because a hidden explanation is not an explanation. §9.4's posture is that a missing capability greys out **with a reason**, and the reason has to be on the control: each unbuilt tab now shows the version it arrives in, `Crop v0.2`, `Masks v0.4`. Monochrome, quieter than the name, no tooltip required.
+
+---
+
+## 2026-09-07 — using it, part two: the photograph was upside down and the open took nine seconds
+
+The 2026-09-07 entry above ends with three bugs found by running the application for the
+first time. This is what the *second* session of running it found, and the shape is the
+same one again: **every one of these was invisible to a green suite, and every one was
+obvious within seconds of looking at the window.**
+
+The instrument that made the difference is worth naming first, because it is cheap and
+nobody had it. A Tauri window on Wayland cannot be screenshotted from a shell, but
+`GDK_BACKEND=x11` makes it an XWayland client and then ImageMagick's `import -window
+PhotoDesk` captures it. That is the whole apparatus. Two of the four findings below were
+visible in the first capture.
+
+### The photograph was upside down, and had been for the whole of v0.1
+
+`preview.ts` blitted the render to the canvas with a flip derived from the pass count:
+
+```ts
+const flip = passes % 2 === 0;
+```
+
+The reasoning behind it was that GL's framebuffer origin is bottom-left, wgpu's is
+top-left, so each pass inverts and the parity has to be tracked. That reasoning is
+wrong, and it is wrong for a reason sitting in our own code: `engine::glsl` lowers WGSL
+through naga with `glsl::Options { ..Default::default() }`, and naga's default
+`writer_flags` is `ADJUST_COORDINATE_SPACE` — *"flip output Y"*. naga had already
+reconciled the two conventions. A GL pass writes the row indices wgpu's pass writes, and
+a pass is **identity** in index space, however many of them there are.
+
+So the correct blit is a single flip at the end — framebuffer row 0 is the canvas's
+bottom — unconditionally. The parity was a second theory of something naga owns, and it
+gave the right answer exactly half the time: with an even pass count, which is what an
+edited photograph has (`adjust` then `encode`). A photograph with **no adjustments** is
+one pass, and one pass is odd, so **every photograph presented upside down until the
+first slider moved, and flipped over when it did.**
+
+Three things had to line up for this to survive:
+
+- §12.2's harness measures the *render*, and the blit is presentation. The agreement
+  number — max 0 of 255 — was true and is still true; it was never about this.
+- The harness did carry a copy of the parity rule, as `blitFlip: passes % 2 === 0`, and
+  checked it against the measured orientation. But it only ever ran the **edited** plan,
+  at two passes, where the rule is right. The negative control makes the point exactly:
+  with `ADJUST_COORDINATE_SPACE` turned off, the two-pass case *still* reads `direct`,
+  because two inversions cancel. The old harness could not distinguish the two worlds.
+- `preview.diagnose()`'s centre pixel says a photograph was drawn. It cannot say which
+  way up.
+
+The fix is three lines and one deletion, but the durable part is elsewhere:
+
+- `engine::glsl` now **states** `writer_flags` instead of inheriting it. The front end's
+  blit depends on that flag, and a naga release that changed its default would otherwise
+  turn every previewed photograph upside down as a silent consequence of `cargo update`.
+- `tests/renderer/` emits and measures **two** plans — the edited document and the same
+  document with an empty stack, which is §11's hold-for-original and the odd case. Both
+  must read `direct`. The `blitFlip` field is gone; the harness no longer keeps a copy
+  of a rule the product has, it asserts the invariant the product relies on.
+
+The general lesson is one the register already has in another form: a parity that
+*accumulates* is a description of the pipeline, and there was already a description of
+the pipeline. The second one drifted.
+
+### Nine seconds to open a photograph, six point eight of them in `invoke`
+
+`app/src/main.rs` says, in a comment written when the command was designed:
+
+> Raw bytes rather than JSON […] Serialising it as numbers would be about 100 MB of text
+> to produce, parse and throw away.
+
+That is exactly what was happening. Instrumented, a 12 MP photograph took **9.2 seconds**
+from launch to first frame; the Rust half of it — read, decode, proxy, and the f16
+interleave — was 0.4. The JS side reported:
+
+```
+TIMING proxy_pixels JS: invoke 6819ms  bytesOf 108ms  shape plain array[97542144]
+```
+
+Tauri v2 answers `invoke` over a `fetch` to its own `ipc:` scheme and falls back to
+`postMessage` — where a `Vec<u8>` is serialised as a JSON array of numbers — the first
+time that fetch is refused. The refusal is permanent for the session and is announced
+only by a `console.warn`, in a webview with no devtools and no console capture.
+
+The refusal was ours: `tauri.conf.json` set `default-src 'self'` and no `connect-src`,
+so `ipc://localhost` was blocked by the app's own CSP. One directive fixes it, and the
+shape that arrives changes with it:
+
+| | invoke | `bytesOf` | shape |
+|---|---|---|---|
+| before | 6819 ms | 108 ms | `plain array[97542144]` |
+| after | 767 ms | 0 ms | `ArrayBuffer` |
+
+End to end, opening a 12 MP photograph went from 9.2 s to 1.9 s; a 12 MP HEIC from 9.7 s
+to 2.3 s.
+
+The detail worth keeping is what the fast shape *is*. `ArrayBuffer` is what §12.2's
+harness has been feeding `execute.ts` all along, through `fetch()` — and the divergence
+between that and what the app really received is precisely what produced the black
+canvas on 2026-09-07. The two paths now agree in shape. `ipc.ts` reports the array shape
+rather than only tolerating it: it is not incorrect, it is the visible end of something
+upstream being wrong, and it costs seven seconds a photograph.
+
+### A HEIC opens, and there is now a way to make one
+
+§1's native subject had never been opened by the application — every photograph so far
+had been a JPEG. `tests/color/tests/heif_icc.rs` builds real HEIF containers and proves
+the decode path reads them, but a file that lives inside a test cannot be handed to a
+person.
+
+`tests/color/examples/make-heic.rs` is the same construction, kept:
+
+```
+cargo run -p photodesk-color --example make-heic -- /tmp/scene.heic [--nclx] [--size WxH]
+```
+
+It needs an HEVC encoder and names `libheif-freeworld` when there is none, in the same
+sentence the decoder uses (§16 #13). The picture is synthetic and says so — no EXIF, no
+gain map, 8-bit — and what it does have is chosen: a clipped highlight with a
+recoverable rim, shadow detail in the bottom two stops, a gradient long enough to band
+if something quantises, and six patches near the P3 primaries where the gamut policy is
+visible at all.
+
+Both branches of §4's HEIF colour reading now run in the product: the ICC file reports
+`Display P3 · ICC, 584 bytes`, the NCLX file `Display P3 · NCLX`. The second took a
+correction. libheif suppresses the NCLX `colr` box by default —
+`macOS_compatibility_workaround_no_nclx_profile` is on, because macOS mishandles it — so
+the first `--nclx` file had **no colour box at all** and the app correctly called it
+untagged. The decoder was right and the generator was wrong, which was only visible
+because the container was walked in Python rather than read back through libheif. That
+is the "check it with something that did not build it" rule paying for itself a fourth
+time.
+
+### And one that was mine
+
+Worth recording because it wasted an hour and will recur. **The front end is embedded in
+the binary**, so `npm run build` alone changes nothing that runs: every front-end edit
+needs `cargo build` after it. `cargo run -p photodesk-app` does that, which is why the
+documented workflow is correct — but running `./target/release/photodesk-app` directly,
+which is the obvious thing to do when iterating, silently runs the previous front end.
+
+The symptom is perfect: added log lines never appear, existing ones do, and nothing
+errors. It cost four increasingly baroque probes into whether `ipc.log` worked before the
+decisive test — change an *existing* message and see whether the change shows up.
+
+### Register
+
+- **The preview blits bottom-up, unconditionally.** FROZEN. The parity it replaces was a
+  second description of what naga's `ADJUST_COORDINATE_SPACE` already settles.
+- **`engine::glsl` states its naga writer flags.** FROZEN, for the same reason.
+- **`tauri.conf.json`'s CSP must carry `connect-src ipc:`.** FROZEN. Without it Tauri
+  silently falls back to a transport that costs seven seconds a photograph.
+- §16 #13's decode half is now exercised by a file rather than only by a test.
